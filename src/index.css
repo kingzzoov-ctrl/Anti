@@ -1,0 +1,257 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lora:ital,wght@0,400..700;1,400..700&family=IBM+Plex+Mono:ital,wght@0,100..700;1,100..700&display=swap');
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Blink UI Theme CSS
+   REQUIRED for @blinkdotnew/ui components to render correctly.
+   BlinkUIProvider adds .theme-{name} + .dark/.light to <html>,
+   activating the matching CSS variable set below.
+   ───────────────────────────────────────────────────────────────────────────── */
+@import '@blinkdotnew/ui/styles';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    letter-spacing: var(--tracking-normal);
+  }
+}
+
+/* ── App palette (unlayered, after utilities) ─────────────────────────────────
+   Overrides @blinkdotnew/ui theme colors. @layer base loses specificity to UI themes.
+   Dark mode uses :root.dark + .theme-*.dark to match BlinkUIProvider.
+   ⚠️ AGENT MUST REPLACE placeholder values with a custom palette.
+   ──────────────────────────────────────────────────────────────────────────── */
+/* ── Ariadne: 深暗神秘 · 高端感知引擎 ───────────────────────────────── */
+:root {
+  /* Ariadne Dark Abyss palette — 深渊·幽暗·直觉 */
+  --background: 240 15% 6%;         /* 极深暗底 #0D0D12 */
+  --foreground: 240 10% 88%;        /* 柔白 #DCDCE8 */
+  --card: 240 12% 10%;              /* 卡片深底 #161620 */
+  --card-foreground: 240 10% 88%;
+  --popover: 240 12% 10%;
+  --popover-foreground: 240 10% 88%;
+
+  /* 深红紫主色 — 内心火焰 */
+  --primary: 330 72% 62%;           /* 玫瑰深红 #D64F8B */
+  --primary-foreground: 240 15% 6%;
+
+  --secondary: 240 12% 15%;         /* 暗灰蓝 #1E1E2C */
+  --secondary-foreground: 240 10% 70%;
+
+  --muted: 240 10% 13%;             /* 深哑灰 #19192A */
+  --muted-foreground: 240 8% 50%;   /* 中灰 #7A7A90 */
+
+  /* 金紫强调色 — 智慧觉醒 */
+  --accent: 265 60% 65%;            /* 幽紫 #9966CC */
+  --accent-foreground: 240 15% 6%;
+
+  --destructive: 0 72% 55%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 240 10% 18%;            /* 边界线 #272733 */
+  --input: 240 10% 18%;
+  --ring: 330 72% 62%;
+
+  /* Charts */
+  --chart-1: 330 72% 62%;
+  --chart-2: 265 60% 65%;
+  --chart-3: 200 70% 55%;
+  --chart-4: 45 90% 55%;
+  --chart-5: 165 55% 45%;
+
+  /* Sidebar */
+  --sidebar: 240 15% 8%;
+  --sidebar-foreground: 240 10% 88%;
+  --sidebar-primary: 330 72% 62%;
+  --sidebar-primary-foreground: 240 15% 6%;
+  --sidebar-accent: 265 60% 65%;
+  --sidebar-accent-foreground: 240 15% 6%;
+  --sidebar-border: 240 10% 14%;
+  --sidebar-ring: 330 72% 62%;
+
+  /* Fonts */
+  --font-sans: DM Sans, sans-serif;
+  --font-serif: Lora, serif;
+  --font-mono: IBM Plex Mono, monospace;
+
+  /* Shadows — 深暗氛围 */
+  --shadow-2xs: 0px 2px 6px hsl(240 20% 3% / 0.4);
+  --shadow-xs: 0px 2px 8px hsl(240 20% 3% / 0.5);
+  --shadow-sm: 0px 4px 12px hsl(240 20% 3% / 0.5), 0px 1px 3px hsl(240 20% 3% / 0.4);
+  --shadow: 0px 4px 16px hsl(240 20% 3% / 0.6);
+  --shadow-md: 0px 8px 24px hsl(240 20% 3% / 0.6), 0px 2px 8px hsl(240 20% 3% / 0.4);
+  --shadow-lg: 0px 12px 40px hsl(240 20% 3% / 0.7), 0px 4px 12px hsl(240 20% 3% / 0.5);
+  --shadow-xl: 0px 20px 60px hsl(240 20% 3% / 0.8);
+  --shadow-2xl: 0px 24px 80px hsl(240 20% 3% / 0.9);
+
+  /* Ariadne custom vars */
+  --glow-primary: 0 0 20px hsl(330 72% 62% / 0.4);
+  --glow-accent: 0 0 20px hsl(265 60% 65% / 0.4);
+  --gradient-primary: linear-gradient(135deg, hsl(330 72% 62%), hsl(265 60% 65%));
+  --gradient-dark: linear-gradient(180deg, hsl(240 15% 8%), hsl(240 15% 4%));
+
+  /* Misc */
+  --tracking-normal: -0.01em;
+  --spacing: 0.25rem;
+  --radius: 0.625rem;
+}
+
+/* Dark mode is default for Ariadne */
+:root.dark,
+.theme-linear.dark,
+.theme-glass.dark,
+.theme-midnight.dark,
+.theme-minimal.dark {
+  --background: 240 15% 4%;
+  --foreground: 240 10% 90%;
+  --card: 240 12% 8%;
+  --card-foreground: 240 10% 90%;
+  --primary: 330 72% 65%;
+  --primary-foreground: 240 15% 4%;
+  --secondary: 240 12% 13%;
+  --secondary-foreground: 240 10% 72%;
+  --muted: 240 10% 11%;
+  --muted-foreground: 240 8% 52%;
+  --accent: 265 60% 68%;
+  --accent-foreground: 240 15% 4%;
+  --border: 240 10% 15%;
+  --input: 240 10% 15%;
+  --ring: 330 72% 65%;
+  --chart-1: 330 72% 65%;
+  --chart-2: 265 60% 68%;
+  --chart-3: 200 70% 58%;
+  --chart-4: 45 90% 58%;
+  --chart-5: 165 55% 48%;
+  --sidebar: 240 15% 6%;
+  --sidebar-foreground: 240 10% 90%;
+  --sidebar-primary: 330 72% 65%;
+  --sidebar-accent: 265 60% 68%;
+  --sidebar-border: 240 10% 12%;
+}
+
+/* ── Ariadne Animations ────────────────────────────────────────────────── */
+.animate-fade-in {
+  animation: fadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInScale {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 8px hsl(330 72% 62% / 0.3); }
+  50% { box-shadow: 0 0 24px hsl(330 72% 62% / 0.6), 0 0 40px hsl(265 60% 65% / 0.3); }
+}
+
+@keyframes pressMode {
+  0% { background-color: hsl(240 15% 6%); }
+  100% { background-color: hsl(0 20% 5%); }
+}
+
+@keyframes streamCursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes radarSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes nodeFlicker {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Stage-based UI states */
+.stage-press {
+  animation: pressMode 0.6s ease-in-out forwards;
+}
+
+.glow-primary {
+  box-shadow: var(--glow-primary);
+}
+
+.glow-accent {
+  box-shadow: var(--glow-accent);
+}
+
+.gradient-text {
+  background: var(--gradient-primary);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.stream-cursor::after {
+  content: '▋';
+  animation: streamCursor 0.8s infinite;
+  color: hsl(330 72% 62%);
+}
+
+/* Ariadne card with border glow */
+.ariadne-card {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.ariadne-card:hover {
+  border-color: hsl(330 72% 62% / 0.4);
+  box-shadow: 0 0 16px hsl(330 72% 62% / 0.15);
+}
+
+/* Scrollbar styling for dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(240 15% 6%);
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(240 10% 22%);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(330 72% 62% / 0.6);
+}
+
+/* Thread chat bubble animations */
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+.chat-bubble-left { animation: slideInLeft 0.25s ease-out; }
+.chat-bubble-right { animation: slideInRight 0.25s ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
