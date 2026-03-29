@@ -1,15 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  Badge,
-  Switch,
-  Skeleton,
-  Progress,
-} from '@blinkdotnew/ui'
+import { Card, CardContent, CardHeader, CardTitle, Badge, Switch, Skeleton, Progress } from '../components/ui'
 import {
   FlaskConical,
   FileText,
@@ -21,8 +12,16 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useUserProfile } from '../hooks/useUserProfile'
-import { blink } from '../blink/client'
-import type { InsightReport, InterviewSession } from '../types'
+import { fetchExposureLogs, fetchReports, fetchSessions, fetchThreads } from '../lib/ariadneApi'
+import type { InsightReport, InterviewSession, ReportRawContent } from '../types'
+
+function normalizeRawContent(raw: InsightReport['rawContent']): ReportRawContent {
+  try {
+    return typeof raw === 'string' ? JSON.parse(raw) : (raw ?? {})
+  } catch {
+    return {}
+  }
+}
 
 export default function DashboardPage() {
   const { user } = useAuth()
@@ -42,23 +41,17 @@ export default function DashboardPage() {
       setStatsLoading(true)
       try {
         const today = new Date().toISOString().split('T')[0]
-        const [rawSessions, rawReports, rawMatches, exposureRaw] = await Promise.all([
-          blink.db.interviewSessions.list({ where: { userId: user.id }, orderBy: { createdAt: 'desc' }, limit: 50 }),
-          blink.db.insightReports.list({ where: { userId: user.id }, orderBy: { createdAt: 'desc' }, limit: 3 }),
-          blink.db.matchRecords.list({
-            where: { OR: [{ userIdA: user.id }, { userIdB: user.id }] },
-            limit: 100,
-          }),
-          blink.db.exposureLogs.list({
-            where: { userId: user.id, date: today },
-            limit: 1,
-          }),
+        const [rawSessions, rawReports, rawThreads, exposureRaw] = await Promise.all([
+          fetchSessions(user.id),
+          fetchReports(user.id),
+          fetchThreads(user.id),
+          fetchExposureLogs(user.id, today),
         ])
-        setSessions(rawSessions as unknown as InterviewSession[])
-        setReports(rawReports as unknown as InsightReport[])
-        setMatches(rawMatches.length)
+        setSessions((rawSessions as InterviewSession[]).slice(0, 50))
+        setReports((rawReports as InsightReport[]).slice(0, 3))
+        setMatches(rawThreads.length)
 
-        const count = exposureRaw.length > 0 ? Number((exposureRaw[0] as any).dailyExposureCount) : 0
+        const count = exposureRaw.length > 0 ? Number(exposureRaw[0].dailyExposureCount) : 0
         const coeff = Math.max(0, 1 - count * 0.05)
         setTodayExposureCount(count)
         setDecayCoeff(coeff)
@@ -260,15 +253,10 @@ export default function DashboardPage() {
             </div>
           ) : (
             reports.map((report) => {
-              let rawContent: { summary?: string } = {}
-              try {
-                rawContent = typeof report.rawContent === 'string'
-                  ? JSON.parse(report.rawContent)
-                  : (report.rawContent ?? {})
-              } catch {
-                rawContent = {}
-              }
+              const rawContent = normalizeRawContent(report.rawContent)
               const score = Number(report.consistencyScore) || 0
+              const chapterCount = rawContent.chapters?.length ?? 0
+              const reportType = rawContent.reportMeta?.reportType ?? 'detailed'
               return (
                 <button
                   key={report.id}
@@ -282,6 +270,12 @@ export default function DashboardPage() {
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {rawContent.summary?.slice(0, 60) || '查看你的深度洞见分析'}...
                     </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-primary/20 text-primary/70">
+                        {reportType}
+                      </Badge>
+                      <span className="text-[10px] text-muted-foreground">章节 {chapterCount}</span>
+                    </div>
                   </div>
                   <div className="flex flex-col items-end gap-1 shrink-0">
                     <div className="w-20">

@@ -1,0 +1,509 @@
+这是一份为你准备的**“Vibe-Coding 交付级”**终极完整体总清单。
+它不仅整合了 dtysky/Ariadne 的原始哲学，还将我们推演出的所有算法模型、数据库结构、状态机 JSON、动态路由配置以及分层通知系统进行了像素级的拼接。你可以直接将整份文档喂给 Cursor、Devin 等 AI 编程助手，作为整个项目的唯一全局上下文。
+Ariadne Web 完整体项目实施与技术架构总清单 (v2026-03-29.Ultimate)
+> 文档属性： Vibe-Coding 终极指令集 / PRD / 架构蓝图
+> 开发原则： 逻辑与代码绝对解耦、算力资产化、端点变量化、高隐私阈值控制。
+> 
+一、 产品总定义
+1.1 一句话定义
+ * [x] Ariadne 是一个通过深度问询生成个人关系洞察报告，利用向量算法支持双人推演与陌生人精准匹配，并具备动态商业限流与资产治理能力的 Web 决策引擎。
+1.2 核心价值交付（它真正卖的是什么）
+ * [x] 深度压迫式问询与矛盾追踪。
+ * [x] 结构化个人洞察报告（需求/恐惧/模式/矛盾/收敛）。
+ * [x] 基于 7 维量化特征的陌生人共鸣匹配。
+ * [x] 双人（定向/陌生人）极端相处压力推演与避坑说明书。
+ * [x] 核心知识资产（Prompt/分析框架）的持续演进能力。
+1.3 边界定义（它不是什么）
+ * [x] 不是泛聊天 AI 站或心理咨询机器人。
+ * [x] 不是“大而全 AI 产品”或社区内容平台。
+ * [x] 不是基于外貌的社交软件，初始社交链路必须强制高匿名。
+ * [x] 不是写死 API 逻辑的黑盒（LLM 与向量引擎端点必须可配）。
+二、 完整功能域清单（含 Web 增强模块）
+2.1 用户侧核心能力
+ * [ ] 来访与问询： 建档、阶段式正式问询。支持中途退出，下次登录恢复上下文。内置防跑题拉回机制。
+ * [ ] 洞察报告： 生成 5 大核心章节（需求/恐惧/模式/矛盾/收敛），支持导出。支持长期多次评估后的“版本演进对比”。
+ * [ ] 双人匹配推演： 选取两份已有报告进行维度比对、张力分析与关系建议。
+ * [ ] 【新增】陌生人发现 (Discovery)： 自动在全局检索契合度 > 阈值的报告，前台仅展示雷达图与共鸣摘要。
+ * [ ] 【新增】深度社交解锁 (The Thread)： 基于报告生成破冰话题，支持“匿名聊天 \to 局部解锁 \to 实名/联系方式交换”的严格阶梯解锁流程。
+2.2 系统侧核心能力
+ * [ ] 问询与报告编排： 执行“发散-压迫-收束”，追踪矛盾，计算逻辑自洽度，组装生成结构化报告。
+ * [ ] 资产与质量治理： 策略/模板/Prompt版本化，识别并归因问询过浅的 Bad-case。
+ * [ ] 【新增】动态路由与配置中心： 实时热切换 LLM 接口（如 OpenAI/Claude/本地模型）、切换向量引擎端点（如 Pinecone/Milvus/pgvector）。
+ * [ ] 【新增】量化提取与匹配引擎： 将非结构化对话提取为 7 维特征向量，并执行余弦相似度计算与曝光度衰减过滤。
+ * [ ] 【新增】商业与限流层： 基于令牌桶（Token Bucket）控制用户的 API 请求频率。
+三、 商业化、限流与通知生态
+3.1 权益分层体系 (Tiered Service)
+ * [ ] 免费版 (Free)： 基础 Token 额度。支持基础洞察报告。被动匹配。通知机制： 仅支持每周 1 次的系统内邮件汇总报告。
+ * [ ] 广告/任务版 (Ad-Reward)： 观看激励视频或完成任务兑换 Token，用于单次解锁深度推演或主动发起陌生人匹配。
+ * [ ] 付费版 (Premium/Pro)： 专属高速算力队列。解锁深度矛盾推演引擎。通知机制： 支持高优专属通道（如 Telegram 推送、专属即时邮件），匹配成功或报告生成后秒级触达。支持绑定多个接收联系人。
+3.2 限流与性能保护
+ * [ ] Token 计费拦截： 每次 AI 追问、每次生成报告、每次发起检索，均在网关层扣减对应 Token。
+ * [ ] 社交带宽限流： 限制单用户同时开启的“深度对话通道”数量，超限后暂时从匹配发现池中隐身。
+四、 核心算法完整实现蓝图
+4.1 画像量化提取算法 (7-Thread Vectorizer)
+在报告生成时，触发后台 Agent 审阅对话，映射出 [0.0, 1.0] 区间的 7 维向量：
+ * V_1 (安全底色): 独立回避 (0.0) \leftrightarrow 焦虑融合 (1.0)
+ * V_2 (权力意志): 适应追随 (0.0) \leftrightarrow 主导控制 (1.0)
+ * V_3 (边界敏感): 开放共享 (0.0) \leftrightarrow 极度防御 (1.0)
+ * V_4 (冲突应对): 逃避冷战 (0.0) \leftrightarrow 激烈对抗 (1.0)
+ * V_5 (情绪粒度): 钝感实用 (0.0) \leftrightarrow 高敏共情 (1.0)
+ * V_6 (价值锚点): 核心资产排序的结构化哈希映射。
+ * V_7 (自洽度系数):
+   
+4.2 深度共鸣匹配算法 (Resonance Algorithm)
+ * 步骤 1：语义初筛。 基于 v_embedding (1536维文本向量) 选出 Top 50。
+ * 步骤 2：精排计算。
+   
+   
+   (注：f_{match} 对价值观取相似度，对权力意志/安全底色取互补度。若双方 V_4 均为对抗或均为逃避，触发 FrictionPenalty 减分)
+ * 步骤 3：信度惩罚。 若任意一方 V_7 < 0.6，总分强制打八折，并打上“低信度画像”标签。
+4.3 曝光疲劳衰减算法 (Exposure Decay)
+为防止“万人迷”霸榜，保护系统算力：
+
+执行动作：当检索出的 FinalVisibility < THRESHOLD 时，该记录被丢弃。
+五、 完整数据对象与状态机模型 (Schema & JSON)
+5.1 数据库核心表 (PostgreSQL + pgvector)
+ * [ ] system_configs (运维核心变量表)
+   * key (PK): LLM_API_ENDPOINT, LLM_API_KEY, VECTOR_DB_URL, TOKEN_COST_ASSESSMENT, DECAY_FACTOR 等。
+   * value (Text), type (Enum: int/float/string/bool)。
+ * [ ] user_profiles
+   * id (UUID), tier (Enum), token_balance (Float), notification_channels (JSON, 存 Telegram ID/邮箱等)。
+ * [ ] insight_reports
+   * id, user_id, raw_content (JSONB), v_feature (Vector[7]), v_embedding (Vector[1536]), consistency_score (Float), is_public (Bool)。
+ * [ ] exposure_logs
+   * user_id, date, daily_exposure_count。
+5.2 Ariadne 对话状态机 (Redis JSON 存储)
+这是维持问询不断裂的核心引擎数据结构。在 Redis 存储的 Key 如 session:{user_id}：
+{
+  "session_id": "sess_8f92a1b3...",
+  "user_id": "usr_99d8c7...",
+  "status": "IN_PROGRESS", 
+  "current_stage": "PRESS", 
+  "turn_count": 12,
+  "max_turns": 30,
+  "context_variables": {
+    "core_topic": "边界感与依赖"
+  },
+  "extracted_contradictions": [
+    {
+      "id": "c_001",
+      "dimension": "独立与融合",
+      "user_statement_A": "我完全不需要情绪价值。",
+      "user_statement_B": "对方半天不回消息我会严重内耗。",
+      "ai_analysis": "口头独立与行为焦虑的强烈反差。",
+      "severity": 0.85
+    }
+  ],
+  "messages": [
+    {"role": "system", "stage": "INIT", "content": "You are Ariadne..."},
+    {"role": "ai", "stage": "DIVERGENT", "content": "设想一个场景..."},
+    {"role": "user", "stage": "DIVERGENT", "content": "我会让他去..."},
+    {"role": "ai", "stage": "PRESS", "content": "你刚才说...但又说...你是在用理性掩盖恐惧吗？"}
+  ],
+  "metrics": {
+    "token_consumed_so_far": 4500
+  }
+}
+
+六、 页面与 UI 交互清单 (Frontend UI)
+ * [ ] 控制台面板 (Dashboard)：
+   * 展示剩余 Token 余额。
+   * 呈现“匹配雷达”开/关状态、当前曝光冷却系数。
+   * 核心报告的快速入口。
+ * [ ] 沉浸式问询实验室 (The Lab)：
+   * 对话流 UI。当后台状态机进入 PRESS (压迫) 阶段时，前端 UI 应当有视觉变化（如色调变暗，输入框提示变更）以增强心理暗示。
+ * [ ] 个人洞察与历史视图 (Insight & History)：
+   * 结构化排版报告（支持 7 维雷达图可视化）。
+   * 支持多版本对比的时间轴视图。
+ * [ ] 匹配与发现中心 (The Bridge / Discovery)：
+   * 匿名卡片瀑布流。仅展示匹配得分和 v_feature 的重叠度图表，不露脸，无额外标签。
+ * [ ] 动态社交沙盒 (The Thread)：
+   * 聊天界面置顶悬浮两人的《潜在火药桶与避坑说明书》。
+   * 提供系统生成的 3 个破冰按钮。
+ * [ ] 全局运维后台 (Admin Console)：
+   * 核心参数热插拔面板（实时改配置不需重启）。
+   * Bad-case 检索，查看 AI 逻辑崩塌的 Session 回放并修正底层 Prompt 资产。
+七、 技术栈与实施架构路径
+ * 后端核心： FastAPI (Python)。利用 Async 处理 LLM 流式输出，结合 Pydantic 进行严格的数据模型与配置校验。
+ * 数据库： PostgreSQL + pgvector 扩展。
+ * 缓存与状态管理： Redis（用于存储状态机 JSON、令牌桶、短时曝光计数）。
+ * AI 编排引擎： LangGraph 或原生代码编写的状态机，负责解析 Redis JSON 并动态组合 Prompt。
+ * 容器化部署： Docker + docker-compose（包含 Web, DB, Redis 容器组），确保多环境一致性。
+ * 前端应用： Next.js + React + TailwindCSS。
+八、 完整质量门与实施禁令 (Strict Prohibitions)
+8.1 逻辑与业务禁令
+ * [ ] 严禁： 把动态压迫问询降级成固定死板的选择题问卷。
+ * [ ] 严禁： 在匹配逻辑中“脑补”缘分。如果契合度极低，必须如实告知，不可为了产品留存强制推荐。
+ * [ ] 严禁： 将社交 UI 做成传统探探/Tinder 的“左滑右滑”模式。
+8.2 架构与代码禁令
+ * [ ] 严禁： 在业务代码中 Hardcode (硬编码) 任何 LLM 的 API 端点、向量库 URL、Token 消耗价格。所有此类参数必须且只能从 system_configs 中读取。
+ * [ ] 严禁： 状态机数据保存在本地内存。必须通过 Redis 序列化，确保应用重启或用户断线重连时上下文不丢失。
+ * [ ] 严禁： 缺乏并发控制的 Token 扣除。必须在 Redis 层面实现原子操作（如 Lua 脚本）或数据库事务。
+ * [ ] 严禁： 为了前端页面的排版整洁，强行删减生成的报告分析语义结构。
+8.3 治理与资产禁令
+ * [ ] 必须： Prompt 和分析策略必须在数据库层面拥有版本号（Version Control），修改策略必须留痕，并支持回滚。
+ * [ ] 必须： 在用户进行深层交互前，确保隐私政策明确告知其量化分析模型的数据运用范围。
+
+九、 核心数据库映射与向量引擎 DDL (PostgreSQL + pgvector)
+必须通过严格的 DDL 锁定底层数据结构，支持 7 维特征提取与 1536 维文本向量检索。
+-- 开启 pgvector 扩展
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 1. 系统配置表 (严格遵守“零硬编码”禁令)
+CREATE TABLE system_configs (
+    key VARCHAR(255) PRIMARY KEY,
+    value TEXT NOT NULL,
+    type VARCHAR(50) NOT NULL CHECK (type IN ('int', 'float', 'string', 'bool')),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. 用户核心资产表
+CREATE TABLE user_profiles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tier VARCHAR(50) DEFAULT 'Free' CHECK (tier IN ('Free', 'Ad-Reward', 'Premium')),
+    token_balance NUMERIC(10, 2) DEFAULT 0.00,
+    notification_channels JSONB DEFAULT '{}'::jsonb, -- 存储联系人与渠道信息
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 3. 洞察报告与匹配向量表
+CREATE TABLE insight_reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES user_profiles(id),
+    raw_content JSONB NOT NULL, -- 存储生成的 Markdown 报告与矛盾追踪表
+    v_feature vector(7),        -- 7维心理动力学特征向量
+    v_embedding vector(1536),   -- 完整报告的语义降维向量
+    consistency_score FLOAT DEFAULT 0.0,
+    is_public BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 建立 HNSW 索引以支持高并发的余弦相似度检索
+CREATE INDEX ON insight_reports USING hnsw (v_embedding vector_cosine_ops);
+
+十、 匹配引擎的数学推演与 SQL 落地 (Resonance Engine)
+在陌生人发现 (Discovery) 模块中，匹配引擎不仅依赖语义，还必须结合 7 维心理特征 V_1 到 V_7 进行计算。底层的共鸣匹配度 S 与疲劳衰减公式如下：
+在应用层，这套逻辑需要被转化为精准的 SQL 检索，筛选出符合条件的候选人：
+-- 核心匹配与疲劳衰减查询 (示例: 查找与当前用户 user_A 最契合的 Top 20)
+WITH target_user AS (
+    SELECT v_embedding, v_feature FROM insight_reports WHERE user_id = 'user_A_uuid' LIMIT 1
+)
+SELECT 
+    r.user_id,
+    -- 计算 1536 维余弦相似度
+    1 - (r.v_embedding <=> t.v_embedding) AS semantic_similarity,
+    -- 结合曝光日志计算衰减惩罚 (假设 α=0.05)
+    (1 - (r.v_embedding <=> t.v_embedding)) * GREATEST(0, 1 - (COALESCE(e.daily_exposure_count, 0) * 0.05)) AS final_score
+FROM 
+    insight_reports r
+CROSS JOIN 
+    target_user t
+LEFT JOIN 
+    exposure_logs e ON r.user_id = e.user_id AND e.date = CURRENT_DATE
+WHERE 
+    r.user_id != 'user_A_uuid'
+    AND r.is_public = TRUE
+    AND r.consistency_score >= 0.6 -- 信度惩罚：剔除逻辑自洽度极低的画像
+ORDER BY 
+    final_score DESC
+LIMIT 20;
+
+十一、 Redis 商业限流引擎 (Lua Token Bucket)
+为了严格遵循并发计费禁令并阻断算力白嫖，必须使用 Redis Lua 脚本在网关层执行原子性的 Token 扣减。
+-- Redis Lua Script: 动态 Token 扣减与拦截
+-- KEYS[1]: user_token_key (e.g., "user:tokens:uuid")
+-- ARGV[1]: 扣减额度 (e.g., 10)
+-- ARGV[2]: 最小保留阈值 (e.g., 0)
+
+local token_key = KEYS[1]
+local cost = tonumber(ARGV[1])
+local min_balance = tonumber(ARGV[2])
+
+local current_balance = tonumber(redis.call('GET', token_key) or "0")
+
+if current_balance - cost >= min_balance then
+    redis.call('DECRBY', token_key, cost)
+    return {1, current_balance - cost} -- 扣费成功，返回剩余余额
+else
+    return {0, current_balance} -- 余额不足，直接拒绝
+end
+
+十二、 分层触达与多通道通知系统 (Notification Pipeline)
+Ariadne 系统的交付不仅在页面，更在于报告生成与匹配成功后的异步触达系统。基于 user_profiles 中的 tier 字段，后端的分发路由机制必须进行严格的物理分流：
+ * Free (基础通道): 提取用户的单次联络方式，路由至低优先级的后台队列（如 Celery 任务），通过 SendGrid 或 AWS SES 仅发送每周一次的简要邮件汇总报告。
+ * Premium/Pro (高优专属通道): 提取 notification_channels 中配置的多个联系人阵列。解析有效渠道后，通过高优队列并发调用相应的 Webhook，确保月度、季度、年度的深度版本演进对比报告能够通过 WeChat、Telegram 或即时专线等方式被秒级推送。这保证了高净值用户的匹配与推演结果能在第一时间触达其社交终端。
+
+十三、 核心会话网关与流式推流实现 (FastAPI Router)
+# api/routes/chat.py
+import json
+import os
+from typing import AsyncGenerator
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from redis.asyncio import Redis
+
+# 假设这些是你项目里的依赖注入和工具函数
+from core.dependencies import get_redis_client, get_current_user
+from core.llm_client import stream_claude_response  # 你的 LLM 调用封装
+from services.billing import check_and_deduct_token # 基于 Lua 脚本的扣费逻辑
+
+router = APIRouter(prefix="/api/v1/ariadne", tags=["Chat Foundation"])
+
+# 1. 启动时将 Ariadne 的核心灵魂装载进内存
+# 确保文件路径与你的物理目录结构一致
+SKILL_PATH = os.path.join(os.path.dirname(__file__), "../../skills/interview.skill.md")
+try:
+    with open(SKILL_PATH, "r", encoding="utf-8") as f:
+        INTERVIEW_SYSTEM_PROMPT = f.read()
+except FileNotFoundError:
+    raise RuntimeError("致命错误：无法找到 interview.skill.md 核心资产，基座启动失败。")
+
+class ChatRequest(BaseModel):
+    message: str
+
+@router.post("/chat/stream")
+async def ariadne_chat_stream(
+    request: ChatRequest,
+    user_id: str = Depends(get_current_user),
+    redis: Redis = Depends(get_redis_client)
+):
+    """
+    Ariadne 纯 Prompt 驱动的对话网关
+    """
+    # 2. 商业装甲：Token 前置扣减 (调用我们之前写的 Lua 脚本)
+    # 假设一次对话消耗 10 Token
+    has_funds = await check_and_deduct_token(redis, user_id, cost=10)
+    if not has_funds:
+        raise HTTPException(status_code=402, detail="Token 余额不足，请充值。")
+
+    session_key = f"ariadne:session:{user_id}"
+    
+    # 3. 幽灵重载：从 Redis 获取无状态上下文
+    session_data = await redis.get(session_key)
+    if session_data:
+        context = json.loads(session_data)
+    else:
+        # 首次建档：注入 System Prompt
+        context = {
+            "turn_count": 0,
+            "messages": [{"role": "system", "content": INTERVIEW_SYSTEM_PROMPT}],
+            "internal_state": {"current_stage": "破冰期", "is_ready_for_report": False}
+        }
+
+    # 4. 强制拦截：检查是否已经达到收敛阈值或轮次极限
+    if context["turn_count"] >= 25 or context["internal_state"].get("is_ready_for_report"):
+        # 触发前端路由跳转，去生成报告
+        return {
+            "action": "REDIRECT_TO_REPORT", 
+            "message": "高维张力推演已完成，正在生成您的核心动力学洞察..."
+        }
+
+    # 追加用户最新发言
+    context["messages"].append({"role": "user", "content": request.message})
+    context["turn_count"] += 1
+
+    # 5. 构建流式推流生成器 (Server-Sent Events)
+    async def event_generator() -> AsyncGenerator[str, None]:
+        full_response_content = ""
+        
+        try:
+            # 调用底层大模型 (强制开启 JSON Schema 或 Tool Calling 以获取结构化信封)
+            # 这里的 stream_claude_response 应该被配置为强制输出包含 internal_state 和 reply_to_user 的 JSON
+            async for chunk in stream_claude_response(context["messages"]):
+                full_response_content += chunk
+                
+                # 为了极致的用户体验，我们可以将原始 chunk 直接推给前端
+                # 前端去解析增量的 JSON 字符串，或者后端在这里做缓冲解析
+                # 这里提供一种简单的 SSE 格式推送
+                yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
+            
+            # 流式传输结束后，解析最终的完整 JSON 结构
+            try:
+                parsed_response = json.loads(full_response_content)
+                reply_text = parsed_response.get("reply_to_user", "")
+                new_state = parsed_response.get("internal_state", {})
+                
+                # 将 AI 的回复追加进历史记录 (只存文本，不存内部思考，节省 Token)
+                context["messages"].append({"role": "assistant", "content": reply_text})
+                # 更新状态机
+                context["internal_state"] = new_state
+                
+                # 发送状态机跃迁事件给前端，触发 UI 变色或动效
+                yield f"data: {json.dumps({'type': 'state_mutation', 'state': new_state})}\n\n"
+                
+            except json.JSONDecodeError:
+                # 容错机制：如果大模型没有遵守 JSON 格式，尝试强行提取文本
+                context["messages"].append({"role": "assistant", "content": full_response_content})
+            
+            # 6. 持久化回写：将更新后的 25 轮完整上下文塞回 Redis，TTL 设为 24 小时
+            await redis.setex(session_key, 86400, json.dumps(context))
+
+            # 7. 如果本轮对话后触发了收敛，发送结束信号
+            if context["internal_state"].get("is_ready_for_report"):
+                yield f"data: {json.dumps({'type': 'system_signal', 'action': 'FINISH_AND_GENERATE'})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': '基座神经元连接波动，请重试。'})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+代码落地要点解析：
+ * 防爆栈设计： INTERVIEW_SYSTEM_PROMPT 只在后端启动时读入内存一次，后续所有并发请求共享这一个字符串，不会因为高并发把服务器内存撑爆。
+ * 纯粹的无状态： 注意到 context 是完全从 Redis 中反序列化出来的，处理完后又塞回去了。这意味着你的 FastAPI 节点可以随时通过 K8s 扩容到 100 个实例，请求打到任何一台机器上都能无缝衔接。
+ * SSE 状态分离： yield 的数据被分为了 'type': 'chunk'（用于打字机文字展示）和 'type': 'state_mutation'（用于前端捕捉大模型的内部矛盾追踪状态并改变页面 UI 压迫感）。
+这份网关代码已经把最难处理的“流式状态同步”和“纯 Prompt 接管”解决了。
+
+十四、 自动化洞察报告流水线 (Report Generation Task)
+当对话基座抛出 FINISH_AND_GENERATE 信号后，FastAPI 必须立刻切断长连接，转入后台异步任务（建议使用 BackgroundTasks 或 Celery）。该任务将负责加载 report.skill.md，提炼 7 维特征，并生成最终向量库资产。
+# services/report_pipeline.py
+import json
+import os
+from sqlalchemy.ext.asyncio import AsyncSession
+from core.llm_client import call_llm_structured # 支持强制 JSON 结构输出的 LLM 客户端
+from core.vector_api import get_embeddings # 调用如 text-embedding-3-small
+from models.database import InsightReport, UserProfile
+
+# 加载报告生成的 Prompt 资产
+REPORT_SKILL_PATH = os.path.join(os.path.dirname(__file__), "../skills/report.skill.md")
+with open(REPORT_SKILL_PATH, "r", encoding="utf-8") as f:
+    REPORT_SYSTEM_PROMPT = f.read()
+
+async def generate_insight_report_task(user_id: str, redis_client, db_session: AsyncSession):
+    """
+    后台任务：提炼最终洞察报告并落库
+    """
+    session_key = f"ariadne:session:{user_id}"
+    session_data = await redis_client.get(session_key)
+    if not session_data:
+        return
+        
+    context = json.loads(session_data)
+    chat_history = context.get("messages", [])
+    
+    # 1. 组装提炼请求：将 25 轮对话记录作为 User 扔给大模型
+    # 强制 LLM 按照 report.skill.md 的要求输出结构化 JSON，必须包含 Markdown 正文和 7 维向量分值
+    prompt_payload = [
+        {"role": "system", "content": REPORT_SYSTEM_PROMPT},
+        {"role": "user", "content": f"请基于以下完整问询记录，生成最终动力学洞察报告：\n{json.dumps(chat_history, ensure_ascii=False)}"}
+    ]
+    
+    # 2. 执行高优推理 (必须使用 Claude Opus 或 GPT-4 级别)
+    report_data = await call_llm_structured(prompt_payload)
+    
+    # report_data 预期结构: 
+    # {
+    #   "markdown_content": "# 您的核心动力学洞察...",
+    #   "v_feature_7d": [0.8, -0.4, 0.9, 0.1, 0.5, -0.2, 0.7],
+    #   "consistency_score": 0.85
+    # }
+    
+    # 3. 语义降维：为全文生成 1536 维向量，供 pgvector 快速匹配使用
+    semantic_embedding = await get_embeddings(report_data["markdown_content"])
+    
+    # 4. 数据落库
+    new_report = InsightReport(
+        user_id=user_id,
+        raw_content=report_data["markdown_content"],
+        v_feature=report_data["v_feature_7d"],
+        v_embedding=semantic_embedding,
+        consistency_score=report_data["consistency_score"],
+        is_public=True # 默认进入匹配池
+    )
+    db_session.add(new_report)
+    await db_session.commit()
+    
+    # 5. 清理 Redis 占用，并触发分发引擎
+    await redis_client.delete(session_key)
+    await dispatch_notifications(user_id, new_report.id, db_session)
+
+十五、 多通道分层通知分发引擎 (Notification & Dispatch)
+系统的商业价值极大程度体现在对“成果触达”的限制与解锁上。底层分发引擎必须严格区分权益，控制触达频率、联系人数量以及推送渠道。
+# services/notification_dispatch.py
+import json
+from models.database import UserProfile
+
+async def dispatch_notifications(user_id: str, report_id: str, db_session):
+    """
+    基于用户权益的触达路由引警
+    """
+    user = await db_session.get(UserProfile, user_id)
+    # channels 格式例: {"email": ["a@test.com", "b@test.com"], "wechat": ["wxid_123"], "telegram": ["@user"]}
+    channels = user.notification_channels 
+    
+    if user.tier in ["Free", "Ad-Reward"]:
+        # 免费级限制：仅允许 1 个接收人，且强制降级为按周期的邮件汇总
+        contact_email = channels.get("email", [])
+        if contact_email:
+            target_email = contact_email[0] # 严格限制单一联系人
+            # 将报告 ID 压入延迟队列，由每周五定时触发的 Cron Worker 统一发送汇总周报
+            await push_to_weekly_email_queue(target_email, report_id)
+            
+    elif user.tier == "Premium":
+        # 付费级特权：多联系人并发，全渠道即时触达，并支持时间维度的深度追踪
+        # 1. 触发即时推送通道
+        if "wechat" in channels:
+            for wx_id in channels["wechat"]:
+                await trigger_wechat_webhook(wx_id, report_id, message="您的最新深度张力推演已生成。")
+                
+        if "telegram" in channels:
+            for tg_id in channels["telegram"]:
+                await trigger_telegram_bot(tg_id, report_id)
+                
+        if "email" in channels:
+            for email in channels["email"]: # 允许发送给多个设定好的邮箱
+                await send_instant_email(email, report_id)
+                
+        # 2. 将报告打上时间戳标签，供后续生成月度、季度、年度的《自我演进比对报告》
+        await register_for_periodic_reviews(user_id, report_id)
+
+十六、 深度张力推演匹配端点 (Deep Match API)
+这是 match.skill.md 资产的最终消耗地。当第一阶段 pgvector 从茫茫人海中为你筛出 Top 20 候选人后，用户点击特定卡片，支付 Token，触发这个极度消耗算力的双人灵魂对抗推演。
+# api/routes/match.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from services.billing import check_and_deduct_token
+from core.llm_client import call_llm_streaming
+
+router = APIRouter(prefix="/api/v1/ariadne", tags=["Resonance Matching"])
+
+# 加载匹配推演的 Prompt 资产
+MATCH_SKILL_PATH = os.path.join(os.path.dirname(__file__), "../../skills/match.skill.md")
+with open(MATCH_SKILL_PATH, "r", encoding="utf-8") as f:
+    MATCH_SYSTEM_PROMPT = f.read()
+
+@router.post("/match/deep_resonance")
+async def execute_deep_match(
+    target_user_id: str,
+    current_user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+    redis = Depends(get_redis_client)
+):
+    """
+    第二阶段：调用 match.skill.md 执行深度的灵魂火药桶推演
+    """
+    # 1. 高阶操作，单次推演扣除高额 Token (例如 50 Token)
+    if not await check_and_deduct_token(redis, current_user_id, cost=50):
+        raise HTTPException(status_code=402, detail="Token 余额不足，无法执行深度张力推演。")
+        
+    # 2. 从数据库拉取双方的底层动力学报告 (Markdown 原文)
+    user_report = await get_latest_report(db, current_user_id)
+    target_report = await get_latest_report(db, target_user_id)
+    
+    if not user_report or not target_report:
+        raise HTTPException(status_code=404, detail="底层报告缺失，无法进行推演。")
+        
+    # 3. 构建高维碰撞的上下文
+    # 严格按照 match.skill.md 的设定，将两份报告作为输入，让大模型在脑内碰撞
+    match_payload = [
+        {"role": "system", "content": MATCH_SYSTEM_PROMPT},
+        {"role": "user", "content": f"【用户 A 画像】：\n{user_report.raw_content}\n\n【用户 B 画像】：\n{target_report.raw_content}\n\n请执行深度推演，并输出包含核心共鸣点与潜在火药桶的完整避坑说明书。"}
+    ]
+    
+    # 4. 返回流式结果给前端呈现“推演过程”
+    async def match_generator():
+        async for chunk in call_llm_streaming(match_payload):
+            yield f"data: {chunk}\n\n"
+        yield "data: [DONE]\n\n"
+        
+    return StreamingResponse(match_generator(), media_type="text/event-stream")

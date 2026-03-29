@@ -1,25 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  Badge,
-  Button,
-  Input,
-  Skeleton,
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  TabsContent,
-  Select,
-  SelectTrigger,
-  SelectContent,
-  SelectItem,
-  SelectValue,
-  toast,
-} from '@blinkdotnew/ui'
+import { Card, CardContent, CardHeader, CardTitle, Badge, Button, Input, Skeleton, Tabs, TabsList, TabsTrigger, TabsContent, Select, SelectTrigger, SelectContent, SelectItem, SelectValue, toast } from '../components/ui'
 import {
   Settings,
   Users,
@@ -34,11 +15,18 @@ import {
   Coins,
   ShieldCheck,
   RefreshCw,
+  AlertTriangle,
+  MessageSquareWarning,
+  Network,
+  RotateCcw,
+  Download,
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useUserProfile } from '../hooks/useUserProfile'
-import { blink } from '../blink/client'
-import type { SystemConfig, InterviewSession } from '../types'
+import { activateStrategyAsset, fetchAllProfiles, fetchExposureLogs, fetchRuntimeConfigs, fetchRuntimeStats, fetchSessions, fetchStrategyAssets, fetchThreads, updateProfile, updateRuntimeConfig } from '../lib/ariadneApi'
+import { buildSessionReplayMarkdown } from '../lib/governanceExport'
+import { getRuntimeFunctionEnvName, RUNTIME_CONFIG_KEYS } from '../lib/runtimeConfig'
+import type { SystemConfig, InterviewSession, SocialThread, StrategyAsset } from '../types'
 
 type StatusFilter = 'ALL' | 'IN_PROGRESS' | 'COMPLETED' | 'PAUSED' | 'GENERATING_REPORT'
 type UserTier = 'Free' | 'Ad-Reward' | 'Premium'
@@ -60,6 +48,16 @@ interface RawProfile {
   isAdmin: boolean | string | number
   createdAt: string
   updatedAt: string
+}
+
+interface NotificationInboxItem {
+  id: string
+  kind: string
+  channel: string
+  title: string
+  body: string
+  status: string
+  createdAt: string
 }
 
 export default function AdminPage() {
@@ -85,6 +83,10 @@ export default function AdminPage() {
   const [addTokenInputs, setAddTokenInputs] = useState<Record<string, string>>({})
   const [showTokenInput, setShowTokenInput] = useState<string | null>(null)
   const [savingProfile, setSavingProfile] = useState<string | null>(null)
+  const [threads, setThreads] = useState<SocialThread[]>([])
+  const [strategyAssets, setStrategyAssets] = useState<StrategyAsset[]>([])
+  const [activatingAssetKey, setActivatingAssetKey] = useState<string | null>(null)
+  const [rollbackingSessionId, setRollbackingSessionId] = useState<string | null>(null)
 
   // Redirect if not admin
   useEffect(() => {
@@ -98,16 +100,17 @@ export default function AdminPage() {
     const load = async () => {
       setIsLoading(true)
       try {
-        const [rawConfigs, rawSessions, rawReports, rawMatches, rawProfiles, rawExposureLogs] = await Promise.all([
-          blink.db.systemConfigs.list({ limit: 100 }),
-          blink.db.interviewSessions.list({ orderBy: { createdAt: 'desc' }, limit: 100 }),
-          blink.db.insightReports.list({ limit: 1 }),
-          blink.db.matchRecords.list({ limit: 1 }),
-          blink.db.userProfiles.list({ limit: 200 }),
-          blink.db.exposureLogs.list({ orderBy: { date: 'desc' }, limit: 100 }),
+        const [rawConfigs, rawSessions, rawProfiles, rawExposureLogs, runtimeStats, rawThreads, rawStrategyAssets] = await Promise.all([
+          fetchRuntimeConfigs(),
+          fetchSessions(),
+          fetchAllProfiles(),
+          fetchExposureLogs(),
+          fetchRuntimeStats(),
+          fetchThreads(),
+          fetchStrategyAssets(),
         ])
 
-        setConfigs(rawConfigs as unknown as SystemConfig[])
+        setConfigs(rawConfigs as SystemConfig[])
         setSessions(rawSessions.map(s => ({
           ...s,
           messages: typeof (s as unknown as { messages: string | unknown[] }).messages === 'string'
@@ -118,26 +121,9 @@ export default function AdminPage() {
         const logsTyped = rawExposureLogs as unknown as ExposureLog[]
         setExposureLogs(logsTyped)
         setUserProfiles(rawProfiles as unknown as RawProfile[])
-
-        // Compute today's exposures
-        const today = new Date().toISOString().split('T')[0]
-        const todayExposures = logsTyped
-          .filter(e => e.date === today)
-          .reduce((sum, e) => sum + Number(e.dailyExposureCount), 0)
-
-        // Get actual counts
-        const [sessCount, repCount, matchCount] = await Promise.all([
-          blink.db.interviewSessions.count({}),
-          blink.db.insightReports.count({}),
-          blink.db.matchRecords.count({}),
-        ])
-        setStats({
-          users: rawProfiles.length,
-          sessions: sessCount,
-          reports: repCount,
-          matches: matchCount,
-          todayExposures,
-        })
+        setStats(runtimeStats)
+        setThreads(rawThreads)
+        setStrategyAssets(rawStrategyAssets)
       } catch {
         // ignore
       } finally {
@@ -149,11 +135,30 @@ export default function AdminPage() {
 
   const reloadProfiles = async () => {
     try {
-      const rawProfiles = await blink.db.userProfiles.list({ limit: 200 })
+      const rawProfiles = await fetchAllProfiles()
       setUserProfiles(rawProfiles as unknown as RawProfile[])
       setStats(prev => ({ ...prev, users: rawProfiles.length }))
     } catch {
       // ignore
+    }
+  }
+
+  const handleActivateStrategyAsset = async (assetKey: string, version: string) => {
+    setActivatingAssetKey(`${assetKey}:${version}`)
+    try {
+      const updated = await activateStrategyAsset(assetKey, version)
+      if (updated) {
+        setStrategyAssets(prev => prev.map(asset => (
+          asset.assetKey === assetKey
+            ? { ...asset, isActive: asset.version === version }
+            : asset
+        )))
+        toast.success(`已切换 ${assetKey} 到 ${version}`)
+      }
+    } catch {
+      toast.error('切换策略资产失败')
+    } finally {
+      setActivatingAssetKey(null)
     }
   }
 
@@ -162,11 +167,8 @@ export default function AdminPage() {
     if (newVal === undefined) return
     setSavingKey(key)
     try {
-      await blink.db.systemConfigs.update(key, {
-        value: newVal,
-        updatedAt: new Date().toISOString(),
-      })
-      setConfigs(prev => prev.map(c => c.key === key ? { ...c, value: newVal } : c))
+      const updated = await updateRuntimeConfig(key, newVal)
+      setConfigs(prev => prev.map(c => c.key === key ? { ...c, value: updated?.value ?? newVal } : c))
       toast.success(`已保存 ${key}`)
     } catch {
       toast.error('保存失败')
@@ -184,11 +186,8 @@ export default function AdminPage() {
     const nextVal = String(nextNum)
     setSavingKey(key)
     try {
-      await blink.db.systemConfigs.update(key, {
-        value: nextVal,
-        updatedAt: new Date().toISOString(),
-      })
-      setConfigs(prev => prev.map(c => c.key === key ? { ...c, value: nextVal } : c))
+      const updated = await updateRuntimeConfig(key, nextVal)
+      setConfigs(prev => prev.map(c => c.key === key ? { ...c, value: updated?.value ?? nextVal } : c))
       setConfigEdits(prev => ({ ...prev, [key]: nextVal }))
       toast.success(`Prompt 版本已更新为 v${nextNum}`)
     } catch {
@@ -210,9 +209,8 @@ export default function AdminPage() {
     const newBalance = Number(prof.tokenBalance) + amount
     setSavingProfile(profileId)
     try {
-      await blink.db.userProfiles.update(profileId, {
-        tokenBalance: String(newBalance),
-        updatedAt: new Date().toISOString(),
+      await updateProfile(profileId, {
+        tokenBalance: newBalance,
       })
       toast.success(`已充值 ${amount} Token`)
       setShowTokenInput(null)
@@ -228,10 +226,7 @@ export default function AdminPage() {
   const handleChangeTier = async (profileId: string, tier: UserTier) => {
     setSavingProfile(profileId)
     try {
-      await blink.db.userProfiles.update(profileId, {
-        tier,
-        updatedAt: new Date().toISOString(),
-      })
+      await updateProfile(profileId, { tier })
       toast.success(`已更新为 ${tier}`)
       await reloadProfiles()
     } catch {
@@ -244,10 +239,7 @@ export default function AdminPage() {
   const handleToggleAdmin = async (profileId: string, current: boolean) => {
     setSavingProfile(profileId)
     try {
-      await blink.db.userProfiles.update(profileId, {
-        isAdmin: !current,
-        updatedAt: new Date().toISOString(),
-      })
+      await updateProfile(profileId, { isAdmin: !current })
       toast.success(current ? '已取消管理员权限' : '已授予管理员权限')
       await reloadProfiles()
     } catch {
@@ -257,9 +249,9 @@ export default function AdminPage() {
     }
   }
 
-  // Bad-case: COMPLETED + turnCount < 8
+  // Bad-case: 优先使用正式 badCaseFlags，其次回退旧阈值规则
   const badCaseIds = new Set(
-    sessions.filter(s => s.status === 'COMPLETED' && (s.turnCount ?? 0) < 8).map(s => s.id)
+    sessions.filter(s => (s.badCaseFlags?.length ?? 0) > 0 || (s.status === 'COMPLETED' && (s.turnCount ?? 0) < 8)).map(s => s.id)
   )
   const filteredSessions = sessions.filter(s => {
     const statusOk = statusFilter === 'ALL' || s.status === statusFilter
@@ -280,14 +272,104 @@ export default function AdminPage() {
 
   // Prompt version configs
   const PROMPT_VERSION_KEYS = ['PROMPT_VERSION_INTERVIEW', 'PROMPT_VERSION_REPORT', 'PROMPT_VERSION_MATCH']
+  const latestInbox = userProfiles
+    .flatMap(profile => {
+      const inbox = Array.isArray((profile as unknown as { notificationChannels?: { inbox?: NotificationInboxItem[] } }).notificationChannels?.inbox)
+        ? ((profile as unknown as { notificationChannels?: { inbox?: NotificationInboxItem[] } }).notificationChannels?.inbox ?? [])
+        : []
+      return inbox.map(item => ({ ...item, userId: profile.userId }))
+    })
+    .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1))
+    .slice(0, 12)
+  const badCaseSessions = sessions.filter(session => badCaseIds.has(session.id))
+
+  const handleExportSessionReplay = (session: InterviewSession) => {
+    const content = buildSessionReplayMarkdown(session)
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Ariadne_Session_${session.id.slice(-6)}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('已导出回放文件')
+  }
+
+  const handleRollbackBadCase = async (session: InterviewSession) => {
+    setRollbackingSessionId(session.id)
+    try {
+      const safeMessages = (session.messages ?? []).filter(message => message.role !== 'system').slice(0, Math.max(0, (session.messages?.length ?? 0) - 2))
+      await updateRuntimeConfig('LAST_BAD_CASE_REPLAY_SESSION', session.id)
+      await updateRuntimeConfig('LAST_BAD_CASE_REPLAY_AT', new Date().toISOString())
+      await updateRuntimeConfig('LAST_BAD_CASE_REPLAY_FLAG', (session.badCaseFlags ?? []).join('|') || 'manual_review')
+      toast.success('已登记 bad-case 回滚锚点', {
+        description: `建议基于 ${safeMessages.length} 条消息重放该会话`,
+      })
+    } catch {
+      toast.error('回滚登记失败')
+    } finally {
+      setRollbackingSessionId(null)
+    }
+  }
   const promptVersionConfigs = configs.filter(c => PROMPT_VERSION_KEYS.includes(c.key))
   const regularConfigs = configs.filter(c => !PROMPT_VERSION_KEYS.includes(c.key))
+  const runtimeEngineConfigs = configs.filter(c => [
+    'LLM_API_ENDPOINT',
+    'LLM_MODEL_INTERVIEW',
+    'LLM_MODEL_MATCH',
+    'VECTOR_DIMENSION',
+    'MATCH_DECAY_FACTOR',
+    'MATCH_RESONANCE_THRESHOLD',
+    'CONSISTENCY_MIN_THRESHOLD',
+  ].includes(c.key))
+  const promptAssetOverview = [
+    {
+      key: 'INTERVIEW',
+      title: '问询 Prompt 资产',
+      summary: '负责阶段式问询、矛盾追踪、状态标记与收敛推进。',
+      scope: ['DIVERGENT / PRESS / CONVERGE', '矛盾标记', '维度覆盖'],
+    },
+    {
+      key: 'REPORT',
+      title: '报告 Prompt 资产',
+      summary: '负责章节化报告、legacy 兼容段落、七维向量与质量标志。',
+      scope: ['基座章节结构', '输出 schema', '质量提醒'],
+    },
+    {
+      key: 'MATCH',
+      title: '匹配 Prompt 资产',
+      summary: '负责双人关系推演、张力区、关系形态与破冰内容。',
+      scope: ['关系定位兼容', '火药桶', '破冰问题'],
+    },
+  ]
+
+  const runtimeRouteOverview = [
+    {
+      key: RUNTIME_CONFIG_KEYS.interview,
+      title: '问询函数路由',
+      envName: getRuntimeFunctionEnvName('interview'),
+      description: 'Lab 问询流、会话推进、报告生成统一走该运行时路由。',
+    },
+    {
+      key: RUNTIME_CONFIG_KEYS.match,
+      title: '匹配函数路由',
+      envName: getRuntimeFunctionEnvName('match'),
+      description: 'Discovery 深度推演、Thread 破冰建议与张力报告统一走该路由。',
+    },
+  ]
 
   const tierColorMap: Record<UserTier, string> = {
     Free: 'border-border text-muted-foreground',
     'Ad-Reward': 'border-[hsl(45,90%,55%)]/50 text-[hsl(45,90%,65%)]',
     Premium: 'border-primary/50 text-primary',
   }
+  const blockedContactThreads = threads.filter(thread => !thread.contactExchangeStatus?.allowed)
+  const severeThreads = threads.filter(thread => (thread.contactExchangeStatus?.severeZoneCount ?? 0) > 0 || Boolean(thread.tensionHandbook?.criticalWarning))
+  const strategyAssetGroups = strategyAssets.reduce<Record<string, StrategyAsset[]>>((acc, asset) => {
+    acc[asset.assetKey] ??= []
+    acc[asset.assetKey].push(asset)
+    return acc
+  }, {})
 
   if (profileLoading || isLoading) {
     return (
@@ -366,10 +448,177 @@ export default function AdminPage() {
             <Coins className="h-3.5 w-3.5 mr-1.5" />
             权益管理
           </TabsTrigger>
+          <TabsTrigger value="notifications" className="text-xs">
+            <Network className="h-3.5 w-3.5 mr-1.5" />
+            通知中心
+          </TabsTrigger>
+          <TabsTrigger value="governance" className="text-xs">
+            <Network className="h-3.5 w-3.5 mr-1.5" />
+            治理闭环
+          </TabsTrigger>
         </TabsList>
 
         {/* ── System Config Tab ── */}
         <TabsContent value="config" className="mt-4 space-y-4">
+          <Card className="ariadne-card border-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-primary" />
+                Prompt 资产总览
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                {promptAssetOverview.map((asset) => {
+                  const versionConfig = promptVersionConfigs.find(c => c.key === `PROMPT_VERSION_${asset.key}`)
+                  return (
+                    <div key={asset.key} className="rounded-lg border border-border/60 bg-card p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-foreground">{asset.title}</p>
+                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{asset.summary}</p>
+                        </div>
+                        <Badge variant="outline" className="text-[10px] border-primary/30 text-primary shrink-0">
+                          {versionConfig ? `v${versionConfig.value}` : '未设版本'}
+                        </Badge>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">当前治理范围</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {asset.scope.map(item => (
+                            <Badge key={item} variant="outline" className="text-[10px] border-border text-muted-foreground">
+                              {item}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="ariadne-card border-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <FileText className="h-4 w-4 text-primary" />
+                报告章节治理基线
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {[
+                  '你的基本画像',
+                  '你在找什么关系',
+                  '你以为你想要的',
+                  '你真正需要的',
+                  '你的认知密码',
+                  '偏好与需求对照',
+                  '你的关系模式',
+                  '择偶方向建议',
+                  '遇到对的人的概率',
+                  '写在最后',
+                ].map((chapter, index) => (
+                  <div key={chapter} className="flex items-center gap-3 rounded-lg border border-border/60 bg-card p-3">
+                    <div className="w-6 h-6 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-[10px] font-mono text-primary shrink-0">
+                      {index + 1}
+                    </div>
+                    <div>
+                      <p className="text-sm text-foreground">{chapter}</p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">纳入统一章节化报告 schema</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="ariadne-card border-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Settings className="h-4 w-4 text-primary" />
+                运行时函数路由治理
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {runtimeRouteOverview.map((route) => {
+                  const config = configs.find((item) => item.key === route.key)
+                  return (
+                    <div key={route.key} className="rounded-lg border border-border/60 bg-card p-4 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-foreground">{route.title}</p>
+                        <Badge variant="outline" className={`text-[10px] ${config?.value ? 'border-primary/30 text-primary' : 'border-destructive/30 text-destructive'}`}>
+                          {config?.value ? '已配置' : '待配置'}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">{route.description}</p>
+                      <div className="rounded-md border border-border/50 bg-muted/20 p-2">
+                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">SystemConfig Key</p>
+                        <p className="text-xs font-mono text-foreground mt-1">{route.key}</p>
+                      </div>
+                      <div className="rounded-md border border-border/50 bg-muted/20 p-2">
+                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground">环境变量回退</p>
+                        <p className="text-xs font-mono text-foreground mt-1">{route.envName}</p>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
+          {runtimeEngineConfigs.length > 0 && (
+            <Card className="ariadne-card border-0">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <RefreshCw className="h-4 w-4 text-primary" />
+                  运行时模型 / 向量热切换
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {runtimeEngineConfigs.map((config) => (
+                    <div key={config.key} className="rounded-lg border border-border/60 bg-card p-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-foreground">{config.key}</p>
+                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                            {config.description || '运行时热切换配置项'}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className={`text-[10px] ${config.source === 'system-config' ? 'border-primary/30 text-primary' : 'border-border text-muted-foreground'}`}>
+                          {config.source === 'system-config' ? '已覆写' : '环境默认'}
+                        </Badge>
+                      </div>
+                      <Input
+                        value={configEdits[config.key] ?? config.value}
+                        onChange={(e) => setConfigEdits(prev => ({ ...prev, [config.key]: e.target.value }))}
+                        className="h-8 text-xs bg-background border-border font-mono"
+                      />
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-[9px] border-border text-muted-foreground">
+                          {config.type}
+                        </Badge>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px] border-primary/40 text-primary hover:bg-primary/10"
+                          onClick={() => handleSaveConfig(config.key)}
+                          disabled={savingKey === config.key || configEdits[config.key] === undefined}
+                        >
+                          <Save className="h-3 w-3 mr-1" />
+                          热更新
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Prompt Version Section */}
           {promptVersionConfigs.length > 0 && (
             <Card className="ariadne-card border-0">
@@ -549,12 +798,43 @@ export default function AdminPage() {
                       <p className="text-[10px] text-muted-foreground mt-0.5">
                         {session.turnCount ?? 0} 轮 · {session.messages?.length ?? 0} 条消息
                       </p>
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {session.readiness !== undefined && (
+                          <Badge variant="outline" className={`text-[9px] h-4 ${session.readiness ? 'border-primary/40 text-primary' : 'border-[hsl(45,90%,55%)]/40 text-[hsl(45,90%,65%)]'}`}>
+                            {session.readiness ? 'READY' : 'NOT_READY'}
+                          </Badge>
+                        )}
+                        {(session.badCaseFlags ?? []).slice(0, 3).map(flag => (
+                          <Badge key={flag} variant="outline" className="text-[9px] h-4 border-destructive/40 text-destructive">
+                            {flag}
+                          </Badge>
+                        ))}
+                        {session.completionReason && (
+                          <Badge variant="outline" className="text-[9px] h-4 border-border text-muted-foreground">
+                            {session.completionReason}
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     {isExpanded ? <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
                   </button>
 
                   {isExpanded && (
                     <div className="px-4 pb-4 border-t border-border/50 pt-3 space-y-2 max-h-80 overflow-y-auto">
+                      {(session.stateContext || session.readiness !== undefined || (session.badCaseFlags?.length ?? 0) > 0) && (
+                        <div className="rounded-lg border border-border/60 bg-card p-3 space-y-2">
+                          <div className="flex flex-wrap gap-2">
+                            {session.stateContext?.activeDimensions?.map(item => (
+                              <Badge key={item} variant="outline" className="text-[9px] h-4 border-primary/30 text-primary">
+                                {item}
+                              </Badge>
+                            ))}
+                          </div>
+                          <p className="text-[10px] text-muted-foreground">
+                            readiness={String(session.readiness ?? session.stateContext?.readiness ?? false)} · offTopic={session.offTopicCount ?? session.stateContext?.offTopicCount ?? 0} · consistency={session.stateContext?.consistencyProxy ?? '—'}
+                          </p>
+                        </div>
+                      )}
                       {Array.isArray(session.messages) && session.messages.filter(m => m.role !== 'system').map((msg, i) => (
                         <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                           <div className={`max-w-[80%] rounded-lg px-3 py-2 text-xs ${
@@ -776,6 +1056,211 @@ export default function AdminPage() {
                       )
                     })}
                   </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="notifications" className="mt-4">
+          <Card className="ariadne-card border-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Network className="h-4 w-4 text-primary" />
+                通知分发中心
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {latestInbox.length === 0 ? (
+                <div className="py-12 text-center">
+                  <Network className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+                  <p className="text-muted-foreground text-sm">暂无通知记录</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {latestInbox.map(item => (
+                    <div key={item.id} className="rounded-lg border border-border/60 bg-card p-3 space-y-1.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-medium text-foreground">{item.title}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">{item.userId} · {item.channel} · {item.kind}</p>
+                        </div>
+                        <Badge variant="outline" className="text-[9px] border-border text-muted-foreground">
+                          {item.status}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{item.body}</p>
+                      <p className="text-[10px] text-muted-foreground/70">{item.createdAt}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="governance" className="mt-4 space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <Card className="ariadne-card border-0">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <MessageSquareWarning className="h-4 w-4 text-destructive" />
+                  线程风险概览
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-card p-3">
+                  <span className="text-xs text-muted-foreground">线程总数</span>
+                  <span className="text-lg font-mono text-foreground">{threads.length}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-card p-3">
+                  <span className="text-xs text-muted-foreground">联系方式被阻塞</span>
+                  <span className="text-lg font-mono text-[hsl(45,90%,65%)]">{blockedContactThreads.length}</span>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border border-border/60 bg-card p-3">
+                  <span className="text-xs text-muted-foreground">高危线程</span>
+                  <span className="text-lg font-mono text-destructive">{severeThreads.length}</span>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="ariadne-card border-0 lg:col-span-2">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-primary" />
+                  策略资产激活矩阵
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {Object.entries(strategyAssetGroups).map(([assetKey, items]) => (
+                  <div key={assetKey} className="rounded-lg border border-border/60 bg-card p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-medium text-foreground">{assetKey}</p>
+                      <Badge variant="outline" className="text-[9px] border-border text-muted-foreground">
+                        {items.length} 个版本
+                      </Badge>
+                    </div>
+                    <div className="space-y-2">
+                      {items.sort((a, b) => b.version.localeCompare(a.version)).map(asset => (
+                        <div key={`${asset.assetKey}:${asset.version}`} className="flex items-center gap-3 rounded-md border border-border/50 bg-muted/20 p-2.5">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs text-foreground">{asset.title || asset.version}</p>
+                            <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{asset.sourcePath || '未登记 sourcePath'}</p>
+                          </div>
+                          <Badge variant="outline" className={`text-[9px] ${asset.isActive ? 'border-primary/40 text-primary' : 'border-border text-muted-foreground'}`}>
+                            {asset.version}
+                          </Badge>
+                          {!asset.isActive && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-[10px] border-primary/40 text-primary hover:bg-primary/10"
+                              onClick={() => handleActivateStrategyAsset(asset.assetKey, asset.version)}
+                              disabled={activatingAssetKey === `${asset.assetKey}:${asset.version}`}
+                            >
+                              激活
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="ariadne-card border-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <RotateCcw className="h-4 w-4 text-destructive" />
+                Bad-case 回滚与复盘
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {badCaseSessions.length === 0 ? (
+                <p className="text-sm text-muted-foreground">当前没有需要回滚登记的 bad-case 会话。</p>
+              ) : (
+                <div className="space-y-2">
+                  {badCaseSessions.slice(0, 10).map(session => (
+                    <div key={session.id} className="rounded-lg border border-border/60 bg-card p-3 space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-mono text-foreground">{session.id}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            {session.currentStage} · {session.turnCount} 轮 · {session.completionReason ?? '未完成'}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {(session.badCaseFlags ?? []).slice(0, 3).map(flag => (
+                            <Badge key={flag} variant="outline" className="text-[9px] h-4 border-destructive/40 text-destructive">
+                              {flag}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px] border-border text-muted-foreground hover:text-foreground"
+                          onClick={() => handleExportSessionReplay(session)}
+                        >
+                          <Download className="h-3 w-3 mr-1" />
+                          导出回放
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-[10px] border-destructive/40 text-destructive hover:bg-destructive/10"
+                          onClick={() => handleRollbackBadCase(session)}
+                          disabled={rollbackingSessionId === session.id}
+                        >
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                          {rollbackingSessionId === session.id ? '登记中...' : '登记回滚'}
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="ariadne-card border-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-[hsl(45,90%,65%)]" />
+                联系方式阻塞线程
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {blockedContactThreads.length === 0 ? (
+                <p className="text-sm text-muted-foreground">当前没有被阻塞的联系方式交换线程。</p>
+              ) : (
+                <div className="space-y-2">
+                  {blockedContactThreads.slice(0, 12).map(thread => (
+                    <div key={thread.id} className="rounded-lg border border-border/60 bg-card p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-mono text-foreground">{thread.id}</p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            stage {thread.unlockState?.currentStage ?? thread.unlockStage} · 消息 {thread.unlockState?.effectiveMessageCount ?? thread.messages.length}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="text-[9px] border-[hsl(45,90%,55%)]/40 text-[hsl(45,90%,65%)]">
+                          {thread.contactExchangeStatus?.relationshipFitLabel ?? '待评估'}
+                        </Badge>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(thread.contactExchangeStatus?.blockers ?? []).slice(0, 4).map(blocker => (
+                          <Badge key={blocker} variant="outline" className="text-[9px] border-destructive/30 text-destructive">
+                            {blocker}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </CardContent>

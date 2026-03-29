@@ -1,19 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import {
-  Card,
-  CardContent,
-  Badge,
-  Skeleton,
-  Button,
-  Select,
-  SelectTrigger,
-  SelectContent,
-  SelectItem,
-  SelectValue,
-  toast,
-  EmptyState,
-} from '@blinkdotnew/ui'
+import { Card, CardContent, Badge, Skeleton, Button, Select, SelectTrigger, SelectContent, SelectItem, SelectValue, toast, EmptyState } from '../components/ui'
 import { Radar as RadarIcon, Users, ArrowUpDown, Globe, Zap, AlertTriangle, X, Flame } from 'lucide-react'
 import {
   RadarChart,
@@ -24,32 +11,13 @@ import {
 } from 'recharts'
 import { useAuth } from '../hooks/useAuth'
 import { useUserProfile } from '../hooks/useUserProfile'
-import { blink } from '../blink/client'
-
-const MATCH_FN = 'https://x4ygiav9--ariadne-match.functions.blink.new'
+import { fetchDiscoveryCards, fetchExposureLogs, fetchPublicReports, fetchReports, createDeepMatch, upsertThread } from '../lib/ariadneApi'
+import type { DiscoveryCard, MatchAnalysisPayload, SocialThread } from '../types'
 
 type SortMode = 'score' | 'newest' | 'consistency'
 
-interface DiscoveryResult {
-  reportId: string
-  anonymousId: string
-  resonanceScore: number
-  featureVector: Record<string, number>
-  consistencyScore: number
-  overlapDimensions: string[]
-  isLowFidelity: boolean
-}
-
-interface DeepMatchResult {
-  resonanceScore: number
-  resonancePoints: string[]
-  tensionZones: Array<{ title: string; description: string; severity: number }>
-  powerDynamics: string
-  growthPotential: string
-  criticalWarning: string | null
-  icebreakers: string[]
-  summary: string
-}
+type DiscoveryResult = DiscoveryCard
+type DeepMatchResult = MatchAnalysisPayload & { matchId?: string }
 
 const radarDims = ['安全感', '权力', '边界', '冲突', '情感']
 
@@ -80,58 +48,16 @@ function DeepMatchModal({
     setChunks('')
     setError('')
     try {
-      const token = await blink.auth.getValidToken()
-      const resp = await fetch(MATCH_FN, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: 'deep_match',
-          userId,
-          targetReportId: card.reportId,
-        }),
-      })
-
-      if (!resp.ok) {
-        const data = await resp.json()
-        if (resp.status === 402) {
+      const data = await createDeepMatch(userId, card.reportId)
+      setChunks(data.summary ?? '')
+      setResult(data as DeepMatchResult)
+      if (data.matchId) setServerMatchId(data.matchId)
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('402')) {
           setError('Token 余额不足，无法执行深度推演（需 50 Token）')
-        } else {
-          setError(data.error || '推演失败')
-        }
-        setStreaming(false)
-        return
+      } else {
+        setError('推演失败')
       }
-
-      const reader = resp.body!.getReader()
-      const decoder = new TextDecoder()
-      let accum = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const text = decoder.decode(value)
-        const lines = text.split('\n')
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6))
-              if (data.type === 'chunk') {
-                accum += data.content
-                setChunks(accum)
-              }
-              if (data.type === 'done' && data.match) {
-                setResult(data.match as DeepMatchResult)
-                if (data.matchId) setServerMatchId(data.matchId as string)
-              }
-            } catch { /* skip */ }
-          }
-        }
-      }
-    } catch {
-      setError('网络异常，请重试')
     } finally {
       setStreaming(false)
     }
@@ -141,33 +67,22 @@ function DeepMatchModal({
     try {
       // Use the server-created matchId from deep_match SSE response to avoid duplicates
       const matchId = serverMatchId ?? `match_${Date.now()}`
-
-      // Only create match record if server didn't already persist one
-      if (!serverMatchId) {
-        await blink.db.matchRecords.create({
-          id: matchId,
-          userIdA: userId,
-          userIdB: card.reportId,
-          resonanceScore: String(card.resonanceScore),
-          matchAnalysis: JSON.stringify(result || {}),
-          status: 'complete',
-          createdAt: new Date().toISOString(),
-        })
-      }
-
       const threadId = `thread_${Date.now()}`
-      await blink.db.socialThreads.create({
+      const now = new Date().toISOString()
+      const threadPayload: SocialThread = {
         id: threadId,
         userIdA: userId,
         userIdB: card.anonymousId,
         matchId,
-        unlockStage: '0',
-        icebreakers: JSON.stringify(result?.icebreakers ?? []),
-        tensionReport: JSON.stringify(result ?? {}),
-        messages: '[]',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })
+        unlockStage: 0,
+        icebreakers: result?.icebreakers ?? [],
+        tensionReport: result ?? '',
+        unlockMilestones: result?.unlockMilestones ?? [],
+        messages: [],
+        createdAt: now,
+        updatedAt: now,
+      }
+      await upsertThread(threadPayload)
       toast.success('连接已建立')
       navigate({ to: '/thread/$threadId', params: { threadId } })
     } catch {
@@ -248,6 +163,21 @@ function DeepMatchModal({
               <p className="text-sm text-foreground leading-relaxed">{result.summary}</p>
             </div>
 
+            {result.relationshipFit && (
+              <div className="ariadne-card p-4 border-primary/20">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground uppercase tracking-widest mb-1">关系定位</p>
+                    <p className="text-sm font-semibold text-foreground">{result.relationshipFit.label}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{result.relationshipFit.description}</p>
+                  </div>
+                  <Badge variant="outline" className="text-[10px] border-primary/30 text-primary">
+                    {result.relationshipFit.score}%
+                  </Badge>
+                </div>
+              </div>
+            )}
+
             {/* Resonance Points */}
             {result.resonancePoints?.length > 0 && (
               <div className="ariadne-card p-4">
@@ -292,6 +222,20 @@ function DeepMatchModal({
               </div>
             )}
 
+            {result.guidance && result.guidance.length > 0 && (
+              <div className="ariadne-card p-4">
+                <p className="text-xs text-muted-foreground uppercase tracking-widest mb-2">推进建议</p>
+                <ul className="space-y-1.5">
+                  {result.guidance.map((item, index) => (
+                    <li key={index} className="text-sm text-foreground/80 flex items-start gap-2">
+                      <span className="text-primary mt-1">•</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <Button className="w-full glow-primary" onClick={handleConnect}>
               建立连接 · 进入 The Thread
             </Button>
@@ -323,10 +267,7 @@ export default function DiscoveryPage() {
       setIsLoading(true)
       try {
         // Check if user has a report
-        const myReports = await blink.db.insightReports.list({
-          where: { userId: user.id },
-          limit: 1,
-        })
+        const myReports = await fetchReports(user.id)
         setHasReport(myReports.length > 0)
 
         if (myReports.length === 0) {
@@ -336,38 +277,17 @@ export default function DiscoveryPage() {
 
         // Get exposure for current user today
         const today = new Date().toISOString().slice(0, 10)
-        const expLogs = await blink.db.exposureLogs.list({
-          where: { userId: user.id, date: today },
-          limit: 1,
-        })
+        const expLogs = await fetchExposureLogs(user.id, today)
         if (expLogs.length > 0) {
-          setMyExposure(Number((expLogs[0] as Record<string, unknown>).dailyExposureCount) || 0)
+          setMyExposure(Number(expLogs[0].dailyExposureCount) || 0)
         }
 
-        // Call discover API
-        const token = await blink.auth.getValidToken()
-        const resp = await fetch(MATCH_FN, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ action: 'discover', userId: user.id }),
-        })
-
-        if (resp.ok) {
-          const data = await resp.json()
-          setResults((data.results as DiscoveryResult[]) || [])
-        } else if (resp.status === 404) {
-          // No public report yet — need to make report public
-          setResults([])
-        } else {
+        try {
+          const items = await fetchDiscoveryCards(user.id)
+          setResults(items)
+        } catch {
           // Fallback to local DB query
-          const publicRaw = await blink.db.insightReports.list({
-            where: { isPublic: '1' },
-            orderBy: { createdAt: 'desc' },
-            limit: 30,
-          })
+          const publicRaw = await fetchPublicReports()
           const others = (publicRaw as Record<string, unknown>[]).filter(r => r.userId !== user.id)
           const fallback: DiscoveryResult[] = others.map(r => ({
             reportId: r.id as string,
@@ -377,6 +297,13 @@ export default function DiscoveryPage() {
             consistencyScore: Number(r.consistencyScore) || 0,
             overlapDimensions: [],
             isLowFidelity: false,
+            relationshipFit: {
+              label: '待推演',
+              score: 60,
+              description: '尚未完成服务端深度关系定位，请先进行深度推演。',
+            },
+            reportType: 'detailed',
+            chapterCount: 0,
           }))
           setResults(fallback)
         }
@@ -499,6 +426,11 @@ export default function DiscoveryPage() {
                         <div className="flex items-center gap-1">
                           <Globe className="h-3 w-3 text-muted-foreground" />
                           <span className="text-[10px] text-muted-foreground">公开档案</span>
+                                {card.reportType && (
+                                  <Badge variant="outline" className="text-[9px] h-3.5 px-1 border-primary/20 text-primary/70">
+                                    {card.reportType}
+                                  </Badge>
+                                )}
                           {card.isLowFidelity && (
                             <Badge variant="outline" className="text-[9px] h-3.5 px-1 border-[hsl(45,90%,55%)]/30 text-[hsl(45,90%,65%)]">
                               低信度
@@ -539,6 +471,16 @@ export default function DiscoveryPage() {
                     </div>
                   )}
 
+                  {card.relationshipFit && (
+                    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] uppercase tracking-widest text-muted-foreground">关系适配</span>
+                        <span className="text-[10px] font-mono text-primary">{card.relationshipFit.score}%</span>
+                      </div>
+                      <p className="text-xs text-foreground mt-1">{card.relationshipFit.label}</p>
+                    </div>
+                  )}
+
                   {/* Score bar */}
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -554,6 +496,7 @@ export default function DiscoveryPage() {
 
                   <div className="flex items-center justify-between text-[10px] text-muted-foreground">
                     <span>自洽度 <span className="font-mono">{Math.round(card.consistencyScore * 100)}%</span></span>
+                    <span>章节 {card.chapterCount ?? 0}</span>
                   </div>
 
                   <Button

@@ -1,15 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  Badge,
-  Skeleton,
-  Progress,
-  toast,
-} from '@blinkdotnew/ui'
+import { Card, CardContent, CardHeader, CardTitle, Badge, Skeleton, Progress, toast } from '../components/ui'
 import {
   FileText,
   ChevronLeft,
@@ -37,8 +28,8 @@ import {
   Legend,
 } from 'recharts'
 import { useAuth } from '../hooks/useAuth'
-import { blink } from '../blink/client'
-import type { InsightReport, FeatureVector, Contradiction, ReportSection } from '../types'
+import { fetchReportById, fetchReports, updateReportPublicState } from '../lib/ariadneApi'
+import type { InsightReport, FeatureVector, Contradiction, ReportSection, ReportChapter, ReportRawContent } from '../types'
 
 const radarDimensions = [
   { key: 'v1Security', label: '安全感' },
@@ -134,6 +125,123 @@ function SectionCard({ icon, title, section }: { icon: React.ReactNode; title: s
               </li>
             ))}
           </ul>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function normalizeRawContent(raw: InsightReport['rawContent'] | string | undefined): ReportRawContent {
+  let parsed: ReportRawContent = {}
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw ?? {})
+  } catch {
+    parsed = {}
+  }
+
+  return {
+    ...parsed,
+    summary: parsed.summary ?? '',
+    chapters: Array.isArray(parsed.chapters) ? parsed.chapters : [],
+    contradictions: Array.isArray(parsed.contradictions) ? parsed.contradictions : [],
+    legacySections: parsed.legacySections ?? {
+      needs: parsed.needs,
+      fears: parsed.fears,
+      patterns: parsed.patterns,
+      convergence: parsed.convergence,
+    },
+    needs: parsed.needs ?? parsed.legacySections?.needs,
+    fears: parsed.fears ?? parsed.legacySections?.fears,
+    patterns: parsed.patterns ?? parsed.legacySections?.patterns,
+    convergence: parsed.convergence ?? parsed.legacySections?.convergence,
+    qualityFlags: parsed.qualityFlags ?? {
+      isLowConfidence: false,
+      hasOpenContradictions: false,
+      coverageWarnings: [],
+    },
+  }
+}
+
+function normalizeReport(raw: InsightReport): InsightReport {
+  const normalizedRawContent = normalizeRawContent(raw.rawContent)
+  return {
+    ...raw,
+    rawContent: normalizedRawContent,
+    vFeature: typeof raw.vFeature === 'string'
+      ? JSON.parse(raw.vFeature || '{}')
+      : (raw.vFeature ?? {}),
+    isPublic: Number(raw.isPublic) > 0 || raw.isPublic === true,
+    consistencyScore: Number(raw.consistencyScore ?? 0),
+    version: Number(raw.version ?? 1),
+    lineageId: raw.lineageId ?? normalizedRawContent.reportMeta?.lineageId,
+    sourceSessionId: raw.sourceSessionId ?? normalizedRawContent.reportMeta?.sourceSessionId,
+    versionCount: Number(raw.versionCount ?? 1),
+    isLatestVersion: Boolean(raw.isLatestVersion ?? true),
+    latestReportId: raw.latestReportId ?? raw.id,
+    previousVersionId: raw.previousVersionId ?? null,
+  }
+}
+
+function getDisplaySections(rawContent: ReportRawContent) {
+  const chapters = rawContent.chapters ?? []
+  const fromChapter = (id: string, fallbackTitle: string): ReportSection | undefined => {
+    const chapter = chapters.find(c => c.id === id)
+    if (!chapter) return undefined
+    return {
+      title: chapter.title || fallbackTitle,
+      content: chapter.content,
+      keyPoints: chapter.keyPoints ?? [],
+    }
+  }
+
+  return {
+    needs: rawContent.needs ?? rawContent.legacySections?.needs ?? fromChapter('deep_needs', '你真正需要的'),
+    fears: rawContent.fears ?? rawContent.legacySections?.fears,
+    patterns: rawContent.patterns ?? rawContent.legacySections?.patterns ?? fromChapter('relationship_pattern', '你的关系模式'),
+    convergence: rawContent.convergence ?? rawContent.legacySections?.convergence ?? fromChapter('guidance', '择偶方向建议'),
+  }
+}
+
+function ChapterCard({ chapter }: { chapter: ReportChapter }) {
+  return (
+    <Card className="ariadne-card border-0">
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle className="text-sm font-medium text-foreground" style={{ fontFamily: 'var(--font-serif)' }}>
+            {chapter.title}
+          </CardTitle>
+          <div className="flex items-center gap-2 shrink-0">
+            <Badge variant="outline" className="text-[10px] border-border text-muted-foreground">
+              {chapter.status === 'partial' ? '信息待补' : '已收敛'}
+            </Badge>
+            <Badge variant="outline" className="text-[10px] border-primary/30 text-primary">
+              {chapter.confidence === 'high' ? '高置信' : chapter.confidence === 'medium' ? '中置信' : '低置信'}
+            </Badge>
+          </div>
+        </div>
+        {chapter.summary && <p className="text-xs text-muted-foreground leading-relaxed">{chapter.summary}</p>}
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">{chapter.content}</p>
+        {chapter.keyPoints?.length > 0 && (
+          <ul className="space-y-1.5">
+            {chapter.keyPoints.map((pt, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-foreground/80">
+                <span className="text-primary mt-1">›</span>
+                {pt}
+              </li>
+            ))}
+          </ul>
+        )}
+        {chapter.evidenceQuotes?.length > 0 && (
+          <div className="rounded-lg bg-muted/20 border border-border p-3 space-y-2">
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">依据原话</p>
+            {chapter.evidenceQuotes.slice(0, 3).map((quote, i) => (
+              <p key={i} className="text-xs text-foreground/70 leading-relaxed border-l-2 border-primary/30 pl-3">
+                “{quote}”
+              </p>
+            ))}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -400,24 +508,20 @@ export default function InsightReportPage() {
     const load = async () => {
       setIsLoading(true)
       try {
-        const raw = await blink.db.insightReports.get(reportId)
+        const raw = await fetchReportById(reportId)
         if (!raw) return
-        const r = raw as unknown as InsightReport & { rawContent: string | InsightReport['rawContent']; vFeature: string | FeatureVector }
-        const parsed: InsightReport = {
-          ...r,
-          rawContent: typeof r.rawContent === 'string' ? JSON.parse(r.rawContent || '{}') : (r.rawContent ?? {}),
-          vFeature: typeof r.vFeature === 'string' ? JSON.parse(r.vFeature || '{}') : (r.vFeature ?? {}),
-          isPublic: Number(r.isPublic) > 0,
-        }
+        const parsed = normalizeReport(raw)
         setReport(parsed)
 
-        // Load all versions for same user
-        const versions = await blink.db.insightReports.list({
-          where: { userId: user.id },
-          orderBy: { version: 'desc' },
-          limit: 20,
-        })
-        setAllVersions(versions as unknown as InsightReport[])
+        // Load versions for same lineage
+        const versions = await fetchReports(user.id)
+        const normalizedVersions = versions.map(normalizeReport)
+        const lineageKey = parsed.lineageId ?? parsed.sourceSessionId ?? parsed.id
+        setAllVersions(
+          normalizedVersions
+            .filter(item => (item.lineageId ?? item.sourceSessionId ?? item.id) === lineageKey)
+            .sort((a, b) => a.version - b.version)
+        )
       } catch {
         // ignore
       } finally {
@@ -436,10 +540,7 @@ export default function InsightReportPage() {
 
   const handleEnterCompare = () => {
     if (!report || allVersions.length < 2) return
-    // Find the version just before current in sorted order
-    const sorted = [...allVersions].sort(
-      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    )
+    const sorted = [...allVersions].sort((a, b) => a.version - b.version)
     const currentIdx = sorted.findIndex(v => v.id === report.id)
     if (currentIdx <= 0) {
       toast('没有更早的版本可供对比', { description: '当前已是最早版本' })
@@ -449,10 +550,7 @@ export default function InsightReportPage() {
     // Parse prev rawContent / vFeature if needed
     const prevParsed = {
       ...prev,
-      rawContent:
-        typeof (prev as unknown as { rawContent: string }).rawContent === 'string'
-          ? JSON.parse((prev as unknown as { rawContent: string }).rawContent || '{}')
-          : (prev.rawContent ?? {}),
+      rawContent: normalizeRawContent((prev as unknown as { rawContent: string | ReportRawContent }).rawContent),
       vFeature:
         typeof (prev as unknown as { vFeature: string }).vFeature === 'string'
           ? JSON.parse((prev as unknown as { vFeature: string }).vFeature || '{}')
@@ -467,8 +565,8 @@ export default function InsightReportPage() {
     setIsPublicToggling(true)
     try {
       const newVal = !report.isPublic
-      await blink.db.insightReports.update(reportId, { isPublic: newVal ? '1' : '0' })
-      setReport(prev => prev ? { ...prev, isPublic: newVal } : prev)
+      const updated = await updateReportPublicState(reportId, newVal)
+      setReport(prev => updated ? normalizeReport(updated) : (prev ? { ...prev, isPublic: newVal } : prev))
       toast.success(newVal ? '已公开至发现广场' : '已设为私密', {
         description: newVal ? '其他用户现在可以发现你的报告' : '报告已从发现广场隐藏',
       })
@@ -481,28 +579,21 @@ export default function InsightReportPage() {
 
   const exportReport = () => {
     if (!report) return
+    const chapters = report.rawContent?.chapters ?? []
     const content = [
       `# ${report.title}`,
       `> 生成时间: ${new Date(report.createdAt).toLocaleDateString('zh-CN')} | 自洽度: ${Math.round(Number(report.consistencyScore))}%`,
       ``,
       `## 综合摘要`,
       report.rawContent?.summary || '',
-      ``,
-      `## 核心需求`,
-      report.rawContent?.needs?.content || '',
-      ...(report.rawContent?.needs?.keyPoints || []).map(p => `- ${p}`),
-      ``,
-      `## 深层恐惧`,
-      report.rawContent?.fears?.content || '',
-      ...(report.rawContent?.fears?.keyPoints || []).map(p => `- ${p}`),
-      ``,
-      `## 关系模式`,
-      report.rawContent?.patterns?.content || '',
-      ...(report.rawContent?.patterns?.keyPoints || []).map(p => `- ${p}`),
-      ``,
-      `## 收敛洞见`,
-      report.rawContent?.convergence?.content || '',
-      ...(report.rawContent?.convergence?.keyPoints || []).map(p => `- ${p}`),
+      ...chapters.flatMap(ch => [
+        ``,
+        `## ${ch.title}`,
+        ch.summary || '',
+        ``,
+        ch.content || '',
+        ...(ch.keyPoints || []).map(p => `- ${p}`),
+      ]),
     ].join('\n')
 
     const blob = new Blob([content], { type: 'text/markdown' })
@@ -541,8 +632,15 @@ export default function InsightReportPage() {
     )
   }
 
-  const radarData = report.vFeature ? toRadarData(report.vFeature) : []
-  const contradictions: Contradiction[] = report.rawContent?.contradictions ?? []
+  const normalizedRawContent = normalizeRawContent(report.rawContent)
+  const normalizedFeature = report.vFeature && Object.keys(report.vFeature).length > 0
+    ? report.vFeature
+    : (normalizedRawContent.featureAnalysis?.vFeature ?? report.vFeature)
+  const radarData = normalizedFeature ? toRadarData(normalizedFeature) : []
+  const contradictions: Contradiction[] = normalizedRawContent.contradictions ?? []
+  const displaySections = getDisplaySections(normalizedRawContent)
+  const chapters = normalizedRawContent.chapters ?? []
+  const coverageWarnings = normalizedRawContent.qualityFlags?.coverageWarnings ?? []
 
   return (
     <div className="min-h-screen bg-background p-6 space-y-6 animate-fade-in">
@@ -662,8 +760,21 @@ export default function InsightReportPage() {
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground leading-relaxed">
-              {report.rawContent?.summary || '暂无摘要'}
+              {normalizedRawContent.summary || '暂无摘要'}
             </p>
+            {normalizedRawContent.reportMeta && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Badge variant="outline" className="text-[10px] border-primary/20 text-primary">
+                  {normalizedRawContent.reportMeta.reportType || 'detailed'}
+                </Badge>
+                <Badge variant="outline" className="text-[10px] border-border text-muted-foreground">
+                  schema {normalizedRawContent.reportMeta.schemaVersion || 'unknown'}
+                </Badge>
+                <Badge variant="outline" className="text-[10px] border-border text-muted-foreground">
+                  prompt {normalizedRawContent.reportMeta.promptAssetVersion || 'unknown'}
+                </Badge>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -689,13 +800,69 @@ export default function InsightReportPage() {
         </Card>
       </div>
 
-      {/* 5 report sections */}
+      {(normalizedRawContent.qualityFlags?.isLowConfidence || normalizedRawContent.qualityFlags?.hasOpenContradictions) && (
+        <Card className="ariadne-card border-0">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-[hsl(45,90%,55%)]" />
+              报告质量提示
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {normalizedRawContent.qualityFlags?.isLowConfidence && (
+              <div className="rounded-lg border border-[hsl(45,90%,55%)]/20 bg-[hsl(45,90%,55%)]/5 px-4 py-3 text-sm text-muted-foreground">
+                当前报告存在低置信章节，建议继续问询补足关键素材。
+              </div>
+            )}
+            {normalizedRawContent.qualityFlags?.hasOpenContradictions && (
+              <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-muted-foreground">
+                报告中仍存在未完全收敛的矛盾，请结合“矛盾提取”与章节证据原话继续校准。
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {coverageWarnings.length > 0 && (
+        <Card className="ariadne-card border-0">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium flex items-center gap-2" style={{ fontFamily: 'var(--font-serif)' }}>
+              <AlertTriangle className="h-4 w-4 text-[hsl(45,90%,55%)]" />
+              章节覆盖提醒
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {coverageWarnings.map((warning, i) => (
+              <p key={i} className="text-sm text-muted-foreground leading-relaxed">• {warning}</p>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Legacy summary sections */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <SectionCard icon={<Target className="h-4 w-4" />} title="核心需求" section={report.rawContent?.needs} />
-        <SectionCard icon={<Heart className="h-4 w-4" />} title="深层恐惧" section={report.rawContent?.fears} />
-        <SectionCard icon={<Repeat className="h-4 w-4" />} title="关系模式" section={report.rawContent?.patterns} />
-        <SectionCard icon={<Lightbulb className="h-4 w-4" />} title="收敛洞见" section={report.rawContent?.convergence} />
+        {displaySections.needs && <SectionCard icon={<Target className="h-4 w-4" />} title="核心需求" section={displaySections.needs} />}
+        {displaySections.fears && <SectionCard icon={<Heart className="h-4 w-4" />} title="深层恐惧" section={displaySections.fears} />}
+        {displaySections.patterns && <SectionCard icon={<Repeat className="h-4 w-4" />} title="关系模式" section={displaySections.patterns} />}
+        {displaySections.convergence && <SectionCard icon={<Lightbulb className="h-4 w-4" />} title="收敛洞见" section={displaySections.convergence} />}
       </div>
+
+      {chapters.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <FileText className="h-4 w-4 text-primary" />
+            <h2 className="text-base font-semibold text-foreground" style={{ fontFamily: 'var(--font-serif)' }}>
+              基座章节结构
+            </h2>
+            <Badge variant="outline" className="text-[10px] border-primary/30 text-primary">
+              {chapters.length} 章
+            </Badge>
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+            {chapters.map(chapter => <ChapterCard key={chapter.id} chapter={chapter} />)}
+          </div>
+        </div>
+      )}
 
       {/* Contradictions */}
       {contradictions.length > 0 && (

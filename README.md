@@ -1,59 +1,43 @@
-# Enhanced Vite React TypeScript Template
+# Ariadne
 
-This template includes built-in detection for missing CSS variables between your Tailwind config and CSS files.
+Ariadne 是一个围绕“深度问询 → 洞察报告 → 匹配推演 → 治理闭环”构建的 Web 决策引擎原型工程。
 
-## Features
+## 当前工程结构
 
-- **CSS Variable Detection**: Automatically detects if CSS variables referenced in `tailwind.config.cjs` are defined in `src/index.css`
-- **Enhanced Linting**: Includes ESLint, Stylelint, and custom CSS variable validation
-- **Shadcn/ui**: Pre-configured with all Shadcn components
-- **Modern Stack**: Vite + React + TypeScript + Tailwind CSS
+- `src/`：前端 Vite + React + TypeScript 应用
+- `backend/`：FastAPI + PostgreSQL(pgvector) + Redis 服务
+- `functions/`：历史 serverless 废弃链路保留区
+- `Ariadne基座/`：方法论、知识与技能基座
 
-## Available Scripts
+## 已落地能力
 
-```bash
-# Run all linting (includes CSS variable check)
-npm run lint
+- 阶段式问询主链路
+- SSE 问询流接口
+- 洞察报告生成与版本演进
+- Discovery / Deep Match / Thread 阶梯解锁
+- Runtime config 热切换
+- Admin 治理台、通知 inbox、bad-case 回放导出
+- Lab 隐私告知确认与 transcript 导出
+- Alembic 初始化骨架
 
-# Check only CSS variables
-npm run check:css-vars
+## 本地脚本
 
-# Individual linting
-npm run lint:js    # ESLint
-npm run lint:css   # Stylelint
-```
+### 前端
 
-## CSS Variable Detection
+- `npm run dev`：启动前端开发环境
+- `npm run build`：构建前端
+- `npm run test`：运行前端单测
+- `npm run lint`：运行类型、样式与 CSS 校验
 
-The template includes a custom script that:
+### 后端
 
-1. **Parses `tailwind.config.cjs`** to find all `var(--variable)` references
-2. **Parses `src/index.css`** to find all defined CSS variables (`--variable:`)
-3. **Cross-references** them to find missing definitions
-4. **Reports undefined variables** with clear error messages
+- 依赖见 `backend/requirements.txt`
+- 测试命令：`pytest`
 
-### Example Output
+## 当前仍待继续补齐
 
-When CSS variables are missing:
-```
-❌ Undefined CSS variables found in tailwind.config.cjs:
-   --sidebar-background
-   --sidebar-foreground
-   --sidebar-primary
-
-Add these variables to src/index.css
-```
-
-When all variables are defined:
-```
-✅ All CSS variables in tailwind.config.cjs are defined
-```
-
-## How It Works
-
-The detection happens during the `npm run lint` command, which will:
-- Exit with error code 1 if undefined variables are found
-- Show exactly which variables need to be added to your CSS file
-- Integrate seamlessly with your development workflow
-
-This prevents runtime CSS issues where Tailwind classes reference undefined CSS variables.
+- 真正后台异步 worker
+- 多通道外发通知发送器
+- 向量引擎多后端抽象
+- 更完整的集成测试
+- 与总清单要求的 Next.js 架构对齐

@@ -1,13 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Lora:ital,wght@0,400..700;1,400..700&family=IBM+Plex+Mono:ital,wght@0,100..700;1,100..700&display=swap');
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Blink UI Theme CSS
-   REQUIRED for @blinkdotnew/ui components to render correctly.
-   BlinkUIProvider adds .theme-{name} + .dark/.light to <html>,
-   activating the matching CSS variable set below.
-   ───────────────────────────────────────────────────────────────────────────── */
-@import '@blinkdotnew/ui/styles';
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -24,11 +16,6 @@
   }
 }
 
-/* ── App palette (unlayered, after utilities) ─────────────────────────────────
-   Overrides @blinkdotnew/ui theme colors. @layer base loses specificity to UI themes.
-   Dark mode uses :root.dark + .theme-*.dark to match BlinkUIProvider.
-   ⚠️ AGENT MUST REPLACE placeholder values with a custom palette.
-   ──────────────────────────────────────────────────────────────────────────── */
 /* ── Ariadne: 深暗神秘 · 高端感知引擎 ───────────────────────────────── */
 :root {
   /* Ariadne Dark Abyss palette — 深渊·幽暗·直觉 */

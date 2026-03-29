@@ -6,7 +6,7 @@ import {
   Outlet,
   redirect,
 } from '@tanstack/react-router'
-import { AppShellLayout } from './components/layout/AppShell'
+import { AppShellLayout } from './components/AppShell'
 import DashboardPage from './pages/DashboardPage'
 import LabPage from './pages/LabPage'
 import InsightPage from './pages/InsightPage'
@@ -15,7 +15,8 @@ import DiscoveryPage from './pages/DiscoveryPage'
 import ThreadPage from './pages/ThreadPage'
 import ThreadDetailPage from './pages/ThreadDetailPage'
 import AdminPage from './pages/AdminPage'
-import { blink } from './blink/client'
+import { authApi } from './lib/localApi'
+import { requireAuthenticatedUser, startLogin } from './lib/runtimeAuth'
 
 // Root route
 const rootRoute = createRootRoute({
@@ -24,8 +25,7 @@ const rootRoute = createRootRoute({
 
 // Auth guard helper
 function requireAuth() {
-  if (!blink.auth.isAuthenticated()) {
-    blink.auth.login()
+  if (!requireAuthenticatedUser()) {
     throw redirect({ to: '/' })
   }
 }
@@ -35,7 +35,7 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   beforeLoad: () => {
-    if (blink.auth.isAuthenticated()) {
+    if (authApi.isAuthenticated()) {
       throw redirect({ to: '/dashboard' })
     }
   },
@@ -53,7 +53,7 @@ function LandingRedirect() {
           心智图谱 · 深度问询系统
         </p>
         <button
-          onClick={() => blink.auth.login()}
+          onClick={() => startLogin()}
           className="px-8 py-3 rounded-lg bg-primary text-primary-foreground font-semibold glow-primary transition-all hover:opacity-90"
         >
           进入系统

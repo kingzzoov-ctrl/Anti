@@ -1,16 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import {
-  Card,
-  CardContent,
-  Badge,
-  Skeleton,
-  EmptyState,
-} from '@blinkdotnew/ui'
+import { Card, CardContent, Badge, Skeleton, EmptyState } from '../components/ui'
 import { MessageCircle, ChevronRight, Lock, Unlock } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
-import { blink } from '../blink/client'
-import type { SocialThread, ThreadMessage } from '../types'
+import { fetchThreads } from '../lib/ariadneApi'
+import type { SocialThread, ThreadMessage, MatchAnalysisPayload, UnlockMilestone } from '../types'
 import { formatDistanceToNow } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 
@@ -19,6 +13,24 @@ const stageBadge = (stage: number) => {
   if (stage >= 2) return { label: '阶段 2/3', color: 'border-[hsl(45,90%,55%)]/40 text-[hsl(45,90%,55%)]', icon: <Unlock className="h-3 w-3" /> }
   if (stage >= 1) return { label: '阶段 1/3', color: 'border-accent/40 text-accent', icon: <Lock className="h-3 w-3" /> }
   return { label: '初始阶段', color: 'border-border text-muted-foreground', icon: <Lock className="h-3 w-3" /> }
+}
+
+function parseMatchAnalysis(input: unknown): MatchAnalysisPayload | null {
+  try {
+    const parsed = typeof input === 'string' ? JSON.parse(input) : input
+    return parsed && typeof parsed === 'object' ? parsed as MatchAnalysisPayload : null
+  } catch {
+    return null
+  }
+}
+
+function parseMilestones(input: unknown): UnlockMilestone[] {
+  try {
+    const parsed = typeof input === 'string' ? JSON.parse(input) : input
+    return Array.isArray(parsed) ? parsed as UnlockMilestone[] : []
+  } catch {
+    return []
+  }
 }
 
 export default function ThreadPage() {
@@ -32,16 +44,14 @@ export default function ThreadPage() {
     const load = async () => {
       setIsLoading(true)
       try {
-        const [asA, asB] = await Promise.all([
-          blink.db.socialThreads.list({ where: { userIdA: user.id }, orderBy: { updatedAt: 'desc' }, limit: 20 }),
-          blink.db.socialThreads.list({ where: { userIdB: user.id }, orderBy: { updatedAt: 'desc' }, limit: 20 }),
-        ])
-        const all = [...(asA as unknown as SocialThread[]), ...(asB as unknown as SocialThread[])]
+        const all = (await fetchThreads(user.id))
           .map(t => ({
             ...t,
             messages: typeof t.messages === 'string' ? JSON.parse(t.messages || '[]') : (t.messages ?? []),
             icebreakers: typeof t.icebreakers === 'string' ? JSON.parse(t.icebreakers || '[]') : (t.icebreakers ?? []),
             unlockStage: Number(t.unlockStage) as 0 | 1 | 2 | 3,
+            tensionReport: parseMatchAnalysis(t.tensionReport) ?? t.tensionReport,
+            unlockMilestones: parseMilestones(t.unlockMilestones),
           }))
           .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
         setThreads(all)
@@ -83,6 +93,11 @@ export default function ThreadPage() {
             const partnerAnon = partnerId.slice(0, 6).toUpperCase()
             const lastMsg = thread.messages[thread.messages.length - 1] as ThreadMessage | undefined
             const badge = stageBadge(thread.unlockStage)
+            const tension = parseMatchAnalysis(thread.tensionReport)
+            const unlockedLabel = thread.unlockMilestones?.find((item) => item.stage === thread.unlockStage)?.label
+            const remainingToNext = thread.unlockState?.remainingMessageCount ?? 0
+            const contactStatus = thread.contactExchangeStatus
+            const blocker = contactStatus?.blockers?.[0]
 
             let timeAgo = ''
             try {
@@ -111,6 +126,11 @@ export default function ThreadPage() {
                       {badge.icon}
                       {badge.label}
                     </Badge>
+                    {tension?.relationshipFit && (
+                      <Badge variant="outline" className="text-[9px] h-4 px-1.5 border-primary/30 text-primary">
+                        {tension.relationshipFit.label}
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground truncate">
                     {lastMsg
@@ -119,6 +139,13 @@ export default function ThreadPage() {
                           : lastMsg.content.slice(0, 60))
                       : '还没有消息，打个招呼吧'}
                   </p>
+                  <div className="flex items-center gap-3 mt-1 text-[10px] text-muted-foreground">
+                    <span>{unlockedLabel ?? '匿名试探'}</span>
+                    {tension?.tensionZones?.length ? <span>张力点 {tension.tensionZones.length}</span> : null}
+                    {thread.unlockStage < 3 ? <span>距下一阶段 {remainingToNext} 条</span> : null}
+                    {contactStatus?.allowed ? <span className="text-[hsl(165,55%,48%)]">可交换联系方式</span> : null}
+                    {!contactStatus?.allowed && blocker ? <span>{blocker}</span> : null}
+                  </div>
                 </div>
 
                 <div className="flex flex-col items-end gap-1 shrink-0">

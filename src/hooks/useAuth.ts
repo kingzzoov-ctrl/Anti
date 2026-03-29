@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { blink } from '../blink/client'
+import { authApi } from '../lib/localApi'
 
 interface AuthUser {
   id: string
@@ -18,13 +18,13 @@ export function useAuth(): AuthState {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    const unsubscribe = blink.auth.onAuthStateChanged((state) => {
+    const unsubscribe = authApi.subscribeAuthState((state) => {
       setUser(state.user ? {
         id: state.user.id,
         email: state.user.email,
         displayName: state.user.displayName,
       } : null)
-      if (!state.isLoading) setIsLoading(false)
+      setIsLoading(Boolean(state.isLoading))
     })
     return unsubscribe
   }, [])

@@ -1,17 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import {
-  Button,
-  Textarea,
-  Badge,
-  Skeleton,
-  Separator,
-  toast,
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@blinkdotnew/ui'
+import { Button, Textarea, Badge, Skeleton, Separator, toast, Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui'
 import {
   ChevronLeft,
   Send,
@@ -25,29 +14,79 @@ import {
   X,
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
-import { blink } from '../blink/client'
-import type { SocialThread, ThreadMessage } from '../types'
+import { fetchThreadById, generateIcebreakers, upsertThread } from '../lib/ariadneApi'
+import type { SocialThread, ThreadMessage, MatchAnalysisPayload, UnlockMilestone } from '../types'
 
 const POLL_INTERVAL = 3000
-const MATCH_FN = 'https://x4ygiav9--ariadne-match.functions.blink.new'
 
-// ── Types ────────────────────────────────────────────────────────────────────
+const UNLOCK_REQUIREMENTS = [0, 5, 10, 15]
 
-interface TensionZone {
-  title: string
-  description: string
-  severity: number
+function normalizeMatchAnalysis(input: unknown): MatchAnalysisPayload | null {
+  if (!input) return null
+  try {
+    const parsed = typeof input === 'string' ? JSON.parse(input) : input
+    if (!parsed || typeof parsed !== 'object') return null
+    const payload = parsed as Partial<MatchAnalysisPayload>
+    return {
+      resonanceScore: Number(payload.resonanceScore ?? 0),
+      resonancePoints: Array.isArray(payload.resonancePoints) ? payload.resonancePoints.map(String) : [],
+      tensionZones: Array.isArray(payload.tensionZones)
+        ? payload.tensionZones.map((zone) => ({
+            title: String(zone.title ?? '未命名张力点'),
+            description: String(zone.description ?? ''),
+            severity: Number(zone.severity ?? 0),
+          }))
+        : [],
+      powerDynamics: String(payload.powerDynamics ?? ''),
+      growthPotential: String(payload.growthPotential ?? ''),
+      criticalWarning: payload.criticalWarning ? String(payload.criticalWarning) : null,
+      icebreakers: Array.isArray(payload.icebreakers) ? payload.icebreakers.map(String) : [],
+      summary: String(payload.summary ?? ''),
+      relationshipFit: payload.relationshipFit,
+      guidance: Array.isArray(payload.guidance) ? payload.guidance.map(String) : [],
+      unlockMilestones: Array.isArray(payload.unlockMilestones) ? payload.unlockMilestones as UnlockMilestone[] : [],
+    }
+  } catch {
+    return null
+  }
 }
 
-interface MatchAnalysis {
-  resonanceScore: number
-  resonancePoints: string[]
-  tensionZones: TensionZone[]
-  powerDynamics: string
-  growthPotential: string
-  criticalWarning: string | null
-  icebreakers: string[]
-  summary: string
+function buildMilestoneState(stage: 0 | 1 | 2 | 3, source: UnlockMilestone[] = []): UnlockMilestone[] {
+  const base: UnlockMilestone[] = [
+    { stage: 0, label: '匿名试探', requirement: '建立连接后立即可用', unlocked: stage >= 0 },
+    { stage: 1, label: '主题交换', requirement: '累计 5 条有效消息', unlocked: stage >= 1 },
+    { stage: 2, label: '边界试探', requirement: '累计 10 条有效消息', unlocked: stage >= 2 },
+    { stage: 3, label: '深层解锁', requirement: '累计 15 条有效消息', unlocked: stage >= 3 },
+  ]
+
+  return base.map((item) => {
+    const matched = source.find((s) => s.stage === item.stage)
+    return matched ? { ...item, ...matched, unlocked: stage >= item.stage } : item
+  })
+}
+
+function normalizeThread(thread: SocialThread): SocialThread {
+  return {
+    ...thread,
+    messages: Array.isArray(thread.messages)
+      ? thread.messages
+      : JSON.parse(String(thread.messages || '[]')),
+    icebreakers: Array.isArray(thread.icebreakers)
+      ? thread.icebreakers
+      : JSON.parse(String(thread.icebreakers || '[]')),
+    unlockStage: Number(thread.unlockStage ?? 0) as 0 | 1 | 2 | 3,
+    unlockMilestones: Array.isArray(thread.unlockMilestones)
+      ? thread.unlockMilestones
+      : JSON.parse(String(thread.unlockMilestones || '[]')),
+  }
+}
+
+function normalizeStage(value: number | null | undefined): 0 | 1 | 2 | 3 {
+  const stage = Number(value ?? 0)
+  if (stage >= 3) return 3
+  if (stage >= 2) return 2
+  if (stage >= 1) return 1
+  return 0
 }
 
 // ── UnlockBar ────────────────────────────────────────────────────────────────
@@ -104,18 +143,8 @@ function TensionReportPanel({
   tensionReport: string
   onClose: () => void
 }) {
-  let parsed: Partial<MatchAnalysis> | null = null
-  let isStructured = false
-
-  try {
-    const obj = JSON.parse(tensionReport)
-    if (obj && (obj.tensionZones || obj.resonancePoints)) {
-      parsed = obj as Partial<MatchAnalysis>
-      isStructured = true
-    }
-  } catch {
-    // plain text fallback
-  }
+  const parsed = normalizeMatchAnalysis(tensionReport)
+  const isStructured = !!parsed
 
   return (
     <div className="flex flex-col gap-5 max-h-[70vh] overflow-y-auto pr-1">
@@ -235,6 +264,7 @@ export default function ThreadDetailPage() {
   const [icebreakers, setIcebreakers] = useState<string[]>([])
   const [tensionReport, setTensionReport] = useState('')
   const [resonanceScore, setResonanceScore] = useState<number | null>(null)
+  const [unlockMilestones, setUnlockMilestones] = useState<UnlockMilestone[]>(buildMilestoneState(0))
   const [inputValue, setInputValue] = useState('')
   const [isSending, setIsSending] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -250,22 +280,8 @@ export default function ThreadDetailPage() {
     if (threadData.icebreakers.length > 0) return
     if (!threadData.matchId) return
     try {
-      const token = await blink.auth.getValidToken()
-      const resp = await fetch(MATCH_FN, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: 'generate_icebreakers',
-          userId: user?.id,
-          threadId: threadData.id,
-          matchId: threadData.matchId,
-        }),
-      })
-      const data = await resp.json()
-      if (data.icebreakers) {
+      const data = await generateIcebreakers(user?.id ?? '', threadData.id, threadData.matchId)
+      if (Array.isArray(data.icebreakers)) {
         setIcebreakers(data.icebreakers)
       }
     } catch {
@@ -275,70 +291,27 @@ export default function ThreadDetailPage() {
 
   // ── DB: load match analysis → tension report ───────────────────────────────
 
-  const loadMatchAnalysis = useCallback(async (matchId: string, currentThreadId: string) => {
-    if (tensionReport) return
-    try {
-      const matches = await blink.db.matchRecords.list({ where: { id: matchId }, limit: 1 })
-      if (matches.length > 0) {
-        const m = matches[0] as any
-        const analysis: Partial<MatchAnalysis> =
-          typeof m.matchAnalysis === 'string'
-            ? JSON.parse(m.matchAnalysis || '{}')
-            : m.matchAnalysis ?? {}
-
-        if (analysis.tensionZones || analysis.resonancePoints) {
-          const jsonStr = JSON.stringify(analysis)
-          setTensionReport(jsonStr)
-          await blink.db.socialThreads.update(currentThreadId, { tensionReport: jsonStr })
-        }
-        if (typeof analysis.resonanceScore === 'number') {
-          setResonanceScore(analysis.resonanceScore)
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }, [tensionReport])
-
   // ── Load thread ────────────────────────────────────────────────────────────
 
   const loadThread = useCallback(async () => {
     if (!threadId) return
     try {
-      const raw = await blink.db.socialThreads.get(threadId)
+      const raw = await fetchThreadById(threadId)
       if (!raw) return
-      const t = raw as unknown as SocialThread & {
-        messages: string | ThreadMessage[]
-        icebreakers: string | string[]
-        unlockStage: string | number
-      }
-      const msgs: ThreadMessage[] =
-        typeof t.messages === 'string'
-          ? JSON.parse(t.messages || '[]')
-          : (t.messages ?? [])
-      const ice: string[] =
-        typeof t.icebreakers === 'string'
-          ? JSON.parse(t.icebreakers || '[]')
-          : (t.icebreakers ?? [])
-
-      const threadData: SocialThread = {
-        ...t,
-        messages: msgs,
-        icebreakers: ice,
-        unlockStage: Number(t.unlockStage) as 0 | 1 | 2 | 3,
-      }
+      const threadData = normalizeThread(raw)
 
       setThread(threadData)
-      setMessages(msgs)
-      setUnlockStage(Number(t.unlockStage) as 0 | 1 | 2 | 3)
-      setIcebreakers(ice)
-      setTensionReport(t.tensionReport || '')
-      lastMsgCountRef.current = msgs.length
+      setMessages(threadData.messages)
+      setUnlockStage(normalizeStage(threadData.unlockState?.currentStage ?? threadData.unlockStage))
+      setIcebreakers(threadData.icebreakers)
+      setTensionReport(typeof threadData.tensionReport === 'string' ? threadData.tensionReport : JSON.stringify(threadData.tensionReport || {}))
+      setUnlockMilestones(buildMilestoneState(normalizeStage(threadData.unlockState?.currentStage ?? threadData.unlockStage), threadData.unlockMilestones ?? []))
+      lastMsgCountRef.current = threadData.messages.length
 
       // Try to parse resonance score from existing tension report
-      if (t.tensionReport) {
+      if (threadData.tensionReport) {
         try {
-          const parsed = JSON.parse(t.tensionReport)
+          const parsed = typeof threadData.tensionReport === 'string' ? JSON.parse(threadData.tensionReport) : threadData.tensionReport
           if (typeof parsed.resonanceScore === 'number') {
             setResonanceScore(parsed.resonanceScore)
           }
@@ -349,17 +322,12 @@ export default function ThreadDetailPage() {
 
       // Load icebreakers from edge function if none exist
       loadIcebreakers(threadData)
-
-      // Load match analysis for tension report
-      if (threadData.matchId) {
-        loadMatchAnalysis(threadData.matchId, threadData.id)
-      }
     } catch {
       // ignore
     } finally {
       setIsLoading(false)
     }
-  }, [threadId, loadIcebreakers, loadMatchAnalysis])
+  }, [threadId, loadIcebreakers])
 
   useEffect(() => {
     loadThread()
@@ -371,19 +339,15 @@ export default function ThreadDetailPage() {
     if (!thread) return
     pollRef.current = setInterval(async () => {
       try {
-        const raw = await blink.db.socialThreads.get(threadId)
+        const raw = await fetchThreadById(threadId)
         if (!raw) return
-        const t = raw as unknown as SocialThread & {
-          messages: string | ThreadMessage[]
-          unlockStage: string | number
-        }
-        const msgs: ThreadMessage[] =
-          typeof t.messages === 'string'
-            ? JSON.parse(t.messages || '[]')
-            : (t.messages ?? [])
+        const t = normalizeThread(raw)
+        const msgs = t.messages
         if (msgs.length !== lastMsgCountRef.current) {
           setMessages(msgs)
-          setUnlockStage(Number(t.unlockStage) as 0 | 1 | 2 | 3)
+          const nextStage = normalizeStage(t.unlockState?.currentStage ?? t.unlockStage)
+          setUnlockStage(nextStage)
+          setUnlockMilestones(buildMilestoneState(nextStage, t.unlockMilestones ?? []))
           lastMsgCountRef.current = msgs.length
         }
       } catch {
@@ -401,24 +365,6 @@ export default function ThreadDetailPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // ── Unlock logic ───────────────────────────────────────────────────────────
-
-  const checkAndUnlock = async (newMsgs: ThreadMessage[], currentStage: number) => {
-    const realMsgs = newMsgs.filter((m) => !m.isSystemMessage)
-    const nextUnlock = Math.min(3, Math.floor(realMsgs.length / 5)) as 0 | 1 | 2 | 3
-    if (nextUnlock > currentStage) {
-      const sysMsg: ThreadMessage = {
-        id: `sys_${Date.now()}`,
-        senderId: 'system',
-        content: `🔓 阶段 ${nextUnlock}/3 已解锁 — 更深的连接正在建立`,
-        timestamp: new Date().toISOString(),
-        isSystemMessage: true,
-      }
-      return { msgs: [...newMsgs, sysMsg], stage: nextUnlock }
-    }
-    return { msgs: newMsgs, stage: currentStage }
-  }
-
   // ── Send message ───────────────────────────────────────────────────────────
 
   const sendMessage = async (content: string) => {
@@ -432,21 +378,38 @@ export default function ThreadDetailPage() {
       timestamp: new Date().toISOString(),
     }
 
-    const newMsgs = [...messages, newMsg]
-    const { msgs: finalMsgs, stage: newStage } = await checkAndUnlock(newMsgs, unlockStage)
+    const nextStage = normalizeStage(Math.floor((messages.filter((m) => !m.isSystemMessage).length + 1) / 5))
 
     try {
-      await blink.db.socialThreads.update(threadId, {
-        messages: JSON.stringify(finalMsgs),
-        unlockStage: String(newStage),
+      const savedThread = await upsertThread({
+        ...(thread ?? {
+          id: threadId,
+          userIdA: user.id,
+          userIdB: '',
+          unlockStage: 0,
+          icebreakers: [],
+          tensionReport: '',
+          messages: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }),
+        id: threadId,
+        unlockStage: nextStage,
+        messages: [...messages, newMsg],
+        unlockMilestones: buildMilestoneState(nextStage, unlockMilestones),
         updatedAt: new Date().toISOString(),
       })
-      setMessages(finalMsgs)
-      setUnlockStage(newStage as 0 | 1 | 2 | 3)
-      lastMsgCountRef.current = finalMsgs.length
+      const normalizedSaved = normalizeThread(savedThread)
+      const resolvedStage = normalizeStage(normalizedSaved.unlockState?.currentStage ?? normalizedSaved.unlockStage)
+      setThread(normalizedSaved)
+      setMessages(normalizedSaved.messages)
+      setUnlockStage(resolvedStage)
+      setUnlockMilestones(buildMilestoneState(resolvedStage, normalizedSaved.unlockMilestones ?? []))
+      lastMsgCountRef.current = normalizedSaved.messages.length
       setInputValue('')
-    } catch {
-      toast.error('发送失败，请重试')
+    } catch (error) {
+      const message = error instanceof Error ? error.message.replace(/^Request failed:\s*\d+\s*/, '') : ''
+      toast.error(message || '发送失败，请重试')
     } finally {
       setIsSending(false)
     }
@@ -464,14 +427,14 @@ export default function ThreadDetailPage() {
   // ── Derived: parse tension report for badge label ─────────────────────────
 
   const hasTensionData = tensionReport.length > 0
+  const parsedTensionReport = normalizeMatchAnalysis(tensionReport)
+  const unlockState = thread?.unlockState
+  const contactExchangeStatus = thread?.contactExchangeStatus
+  const tensionHandbook = thread?.tensionHandbook
+  const stagePolicy = thread?.stagePolicy
 
   let tensionZoneCount = 0
-  try {
-    const parsed = JSON.parse(tensionReport)
-    tensionZoneCount = parsed?.tensionZones?.length ?? 0
-  } catch {
-    tensionZoneCount = hasTensionData ? 1 : 0
-  }
+  tensionZoneCount = parsedTensionReport?.tensionZones?.length ?? (hasTensionData ? 1 : 0)
 
   // ── Loading / not found ────────────────────────────────────────────────────
 
@@ -540,6 +503,75 @@ export default function ThreadDetailPage() {
           </div>
         </div>
         <UnlockBar stage={unlockStage} />
+      </div>
+
+      <div className="shrink-0 px-4 pt-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          {unlockMilestones.map((item) => (
+            <div
+              key={item.stage}
+              className={`rounded-xl border px-3 py-2 ${item.unlocked ? 'border-primary/30 bg-primary/5' : 'border-border/60 bg-muted/20'}`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium text-foreground">{item.label}</span>
+                <Badge variant="outline" className={`text-[9px] ${item.unlocked ? 'border-primary/30 text-primary' : 'border-border text-muted-foreground'}`}>
+                  {item.unlocked ? '已解锁' : `Lv.${item.stage}`}
+                </Badge>
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">{item.requirement}</p>
+              {typeof item.remainingMessageCount === 'number' && !item.unlocked ? (
+                <p className="text-[10px] text-muted-foreground mt-1">还差 {item.remainingMessageCount} 条有效消息</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="shrink-0 px-4 pt-1">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div className="rounded-xl border border-border/60 bg-card/60 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">联系方式交换</p>
+            <p className="text-sm text-foreground mt-1">
+              {contactExchangeStatus?.allowed ? '已开放交换联系方式' : '尚未开放交换联系方式'}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+              {contactExchangeStatus?.reason ?? '需要完成更深阶段解锁后才能推进。'}
+            </p>
+            {contactExchangeStatus?.blockers?.length ? (
+              <ul className="mt-2 space-y-1">
+                {contactExchangeStatus.blockers.map((item, index) => (
+                  <li key={index} className="text-[10px] text-muted-foreground">• {item}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+          <div className="rounded-xl border border-border/60 bg-card/60 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">下一阶段条件</p>
+            <p className="text-sm text-foreground mt-1">
+              {unlockState?.isFullyUnlocked ? '当前已完成全部阶梯解锁' : `还差 ${unlockState?.remainingMessageCount ?? Math.max(0, UNLOCK_REQUIREMENTS[unlockStage + 1] - messages.filter((m) => !m.isSystemMessage).length)} 条有效消息`}
+            </p>
+            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+              {unlockState?.nextStage != null ? `达到 ${unlockState.nextStageRequiredMessageCount ?? UNLOCK_REQUIREMENTS[unlockState.nextStage]} 条后进入下一阶段。` : '你们已进入深层解锁，可以视情况推进到站外连接。'}
+            </p>
+          </div>
+          <div className="rounded-xl border border-border/60 bg-card/60 px-3 py-3">
+            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">阶段行为提示</p>
+            <p className="text-sm text-foreground mt-1">{stagePolicy?.label ?? '匿名试探'}</p>
+            <p className="text-[11px] text-muted-foreground mt-1 leading-relaxed">
+              {stagePolicy?.guidance ?? '当前阶段建议优先建立基础安全感。'}
+            </p>
+            {stagePolicy?.allowedActions?.length ? (
+              <div className="mt-2">
+                <p className="text-[10px] text-muted-foreground mb-1">可做</p>
+                <div className="flex flex-wrap gap-1">
+                  {stagePolicy.allowedActions.slice(0, 3).map((item, index) => (
+                    <span key={index} className="rounded-full border border-primary/20 px-2 py-0.5 text-[10px] text-primary">{item}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
 
       {/* ── Floating tension button (visible when data available) ── */}
@@ -648,11 +680,11 @@ export default function ThreadDetailPage() {
         </div>
         <div className="flex items-center justify-between mt-1.5 px-1">
           <p className="text-[10px] text-muted-foreground">
-            每 5 条消息解锁新阶段 · 当前 {messages.filter((m) => !m.isSystemMessage).length} 条
+            当前处于 {unlockMilestones.find((item) => item.stage === unlockStage)?.label ?? '匿名试探'} · 有效消息 {messages.filter((m) => !m.isSystemMessage).length} 条
           </p>
           {unlockStage < 3 && (
             <p className="text-[10px] text-muted-foreground">
-              距下次解锁 {5 - (messages.filter((m) => !m.isSystemMessage).length % 5)} 条
+              距下次解锁 {Math.max(0, UNLOCK_REQUIREMENTS[unlockStage + 1] - messages.filter((m) => !m.isSystemMessage).length)} 条
             </p>
           )}
         </div>
@@ -670,7 +702,7 @@ export default function ThreadDetailPage() {
           <DialogHeader className="pb-2">
             <DialogTitle className="flex items-center gap-2 text-base">
               <span className="text-xl">⚠️</span>
-              <span className="text-red-300 font-semibold tracking-wide">避坑说明书</span>
+              <span className="text-red-300 font-semibold tracking-wide">{tensionHandbook?.title ?? '避坑说明书'}</span>
               <span className="ml-1 text-[10px] uppercase tracking-widest text-red-500/60 font-mono">
                 双人火药桶
               </span>
@@ -682,10 +714,27 @@ export default function ThreadDetailPage() {
 
           <Separator className="bg-red-500/15 mb-4" />
 
+          {tensionHandbook?.summary ? (
+            <div className="mb-4 rounded-lg border border-red-500/20 bg-red-950/30 p-3">
+              <p className="text-xs text-red-200/90 leading-relaxed">{tensionHandbook.summary}</p>
+            </div>
+          ) : null}
+
           <TensionReportPanel
             tensionReport={tensionReport}
             onClose={() => setShowTensionPanel(false)}
           />
+
+          {tensionHandbook?.warnings?.length ? (
+            <div className="mt-4 rounded-lg border border-red-500/20 bg-red-950/20 p-3">
+              <p className="text-[11px] uppercase tracking-widest text-red-300/70 mb-2">推进提醒</p>
+              <ul className="space-y-1.5">
+                {tensionHandbook.warnings.slice(0, 3).map((item, index) => (
+                  <li key={index} className="text-xs text-red-100/80 leading-relaxed">• {item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>

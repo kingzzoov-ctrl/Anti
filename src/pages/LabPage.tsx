@@ -1,27 +1,42 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import {
-  Button,
-  Badge,
-  Textarea,
-  Skeleton,
-  toast,
-  LoadingOverlay,
-} from '@blinkdotnew/ui'
-import { Send, FlaskConical, Zap, AlertTriangle, X, ChevronRight, Circle } from 'lucide-react'
+import { Button, Badge, Textarea, Skeleton, toast, LoadingOverlay } from '../components/ui'
+import { Send, FlaskConical, Zap, AlertTriangle, X, ChevronRight, Circle, Download, ShieldCheck } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuth } from '../hooks/useAuth'
 import { useUserProfile } from '../hooks/useUserProfile'
-import { blink } from '../blink/client'
+import { createInterviewTurnStream, createReportJob, fetchSessionById, upsertSession } from '../lib/ariadneApi'
+import { buildTranscriptMarkdown } from '../lib/governanceExport'
+import { getRuntimeApiBaseEnvName, getRuntimeFunctionEnvName, RUNTIME_CONFIG_KEYS } from '../lib/runtimeConfig'
 import type { Message, SessionStage, InterviewSession, Contradiction } from '../types'
-
-const EDGE_FN = 'https://x4ygiav9--ariadne-interview.functions.blink.new'
 
 const stageConfig = {
   DIVERGENT: { label: 'DIVERGENT', color: 'bg-[hsl(200,70%,55%)]/20 text-[hsl(200,70%,65%)] border-[hsl(200,70%,55%)]/30' },
   PRESS: { label: 'PRESS', color: 'bg-destructive/20 text-destructive border-destructive/30' },
   CONVERGE: { label: 'CONVERGE', color: 'bg-[hsl(45,90%,55%)]/20 text-[hsl(45,90%,65%)] border-[hsl(45,90%,55%)]/30' },
+  REPORT_READY: { label: 'REPORT_READY', color: 'bg-primary/20 text-primary border-primary/30' },
   COMPLETE: { label: 'COMPLETE', color: 'bg-primary/20 text-primary border-primary/30' },
+} satisfies Record<SessionStage, { label: string; color: string }>
+
+function normalizeSession(session: InterviewSession): InterviewSession {
+  return {
+    ...session,
+    turnCount: Number(session.turnCount ?? 0),
+    maxTurns: Number(session.maxTurns ?? 30),
+    messages: Array.isArray(session.messages)
+      ? session.messages
+      : JSON.parse(String(session.messages || '[]')),
+    extractedContradictions: Array.isArray(session.extractedContradictions)
+      ? session.extractedContradictions
+      : JSON.parse(String(session.extractedContradictions || '[]')),
+    contextVariables: session.contextVariables ?? {},
+    tokenConsumed: Number(session.tokenConsumed ?? 0),
+    stateContext: session.stateContext,
+    readiness: session.readiness ?? session.stateContext?.readiness ?? false,
+    offTopicCount: Number(session.offTopicCount ?? session.stateContext?.offTopicCount ?? 0),
+    badCaseFlags: session.badCaseFlags ?? session.stateContext?.badCaseFlags ?? [],
+    completionReason: session.completionReason ?? session.stateContext?.completionReason ?? null,
+  }
 }
 
 // ── Stage Progress Step ──────────────────────────────────────────────────────
@@ -333,7 +348,7 @@ export default function LabPage() {
   const params = useParams({ strict: false }) as { sessionId?: string }
   const navigate = useNavigate()
   const { user } = useAuth()
-  const { profile, deductTokens } = useUserProfile(user?.id ?? null)
+  const { profile, refetch: refetchProfile } = useUserProfile(user?.id ?? null)
 
   const [messages, setMessages] = useState<Message[]>([])
   const [sessionId, setSessionId] = useState<string | null>(params.sessionId ?? null)
@@ -346,40 +361,52 @@ export default function LabPage() {
   const [sessionLoading, setSessionLoading] = useState(!!params.sessionId)
   const [contradictions, setContradictions] = useState<Contradiction[]>([])
   const [panelOpen, setPanelOpen] = useState(false)
+  const [runtimeWarning, setRuntimeWarning] = useState<string | null>(null)
+  const [privacyAccepted, setPrivacyAccepted] = useState(false)
+  const [sessionMeta, setSessionMeta] = useState<Pick<InterviewSession, 'stateContext' | 'readiness' | 'offTopicCount' | 'badCaseFlags' | 'completionReason'>>({
+    stateContext: undefined,
+    readiness: false,
+    offTopicCount: 0,
+    badCaseFlags: [],
+    completionReason: null,
+  })
+  const [reportJobProgress, setReportJobProgress] = useState<{ status: string; progress: number; label?: string } | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const privacyStorageKey = user?.id ? `ariadne:privacy:${user.id}` : 'ariadne:privacy:anonymous'
 
   const isPress = stage === 'PRESS'
 
   // Load existing session
   useEffect(() => {
+    try {
+      setPrivacyAccepted(window.localStorage.getItem(privacyStorageKey) === 'accepted')
+    } catch {
+      setPrivacyAccepted(false)
+    }
+  }, [privacyStorageKey])
+
+  useEffect(() => {
     if (!params.sessionId || !user?.id) return
     const load = async () => {
       setSessionLoading(true)
       try {
-        const session = await blink.db.interviewSessions.get(params.sessionId!)
-        if (session && (session as unknown as InterviewSession).userId === user.id) {
-          const s = session as unknown as InterviewSession & {
-            messages: string | Message[]
-            extractedContradictions: string | Contradiction[]
-          }
-          const msgs: Message[] = typeof s.messages === 'string'
-            ? JSON.parse(s.messages || '[]')
-            : (s.messages ?? [])
-          setMessages(msgs)
+        const session = await fetchSessionById(params.sessionId!)
+        if (session && session.userId === user.id) {
+          const s = normalizeSession(session)
+          setMessages(s.messages)
           setStage(s.currentStage ?? 'DIVERGENT')
           setTurnCount(s.turnCount ?? 0)
           setSessionId(params.sessionId!)
-
-          // Parse and load contradictions
-          const rawContradictions = s.extractedContradictions
-          if (rawContradictions) {
-            const parsed: Contradiction[] = typeof rawContradictions === 'string'
-              ? JSON.parse(rawContradictions || '[]')
-              : (rawContradictions ?? [])
-            setContradictions(parsed)
-          }
+          setContradictions(s.extractedContradictions ?? [])
+          setSessionMeta({
+            stateContext: s.stateContext,
+            readiness: s.readiness ?? false,
+            offTopicCount: s.offTopicCount ?? 0,
+            badCaseFlags: s.badCaseFlags ?? [],
+            completionReason: s.completionReason ?? null,
+          })
         }
       } catch {
         // ignore
@@ -401,38 +428,59 @@ export default function LabPage() {
     currentStage: SessionStage,
     turns: number,
     currentContradictions: Contradiction[],
-    status = 'IN_PROGRESS'
+    status = 'IN_PROGRESS',
+    extra?: Pick<InterviewSession, 'stateContext' | 'readiness' | 'offTopicCount' | 'badCaseFlags' | 'completionReason'>
   ) => {
     try {
-      await blink.db.interviewSessions.update(sid, {
-        messages: JSON.stringify(msgs),
-        currentStage: currentStage,
-        turnCount: String(turns),
-        extractedContradictions: JSON.stringify(currentContradictions),
+      await upsertSession({
+        id: sid,
+        userId: user?.id ?? '',
         status,
+        currentStage,
+        turnCount: turns,
+        maxTurns: 30,
+        contextVariables: {},
+        extractedContradictions: currentContradictions,
+        messages: msgs,
+        tokenConsumed: 0,
+        stateContext: extra?.stateContext,
+        readiness: extra?.readiness,
+        offTopicCount: extra?.offTopicCount,
+        badCaseFlags: extra?.badCaseFlags,
+        completionReason: extra?.completionReason,
+        createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
     } catch {
       // ignore
     }
-  }, [])
+  }, [user?.id])
 
   const startSession = async () => {
     if (!user?.id) return
+    if (!privacyAccepted) {
+      toast.error('请先确认隐私与治理告知')
+      return
+    }
     setIsStarting(true)
     try {
-      const newSession = await blink.db.interviewSessions.create({
+      const createdAt = new Date().toISOString()
+      const newSession: InterviewSession = {
         id: `sess_${user.id}_${Date.now()}`,
         userId: user.id,
         status: 'IN_PROGRESS',
         currentStage: 'DIVERGENT',
-        turnCount: '0',
-        messages: '[]',
-        extractedContradictions: '[]',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      })
-      const sid = (newSession as unknown as InterviewSession).id
+        turnCount: 0,
+        maxTurns: 30,
+        contextVariables: {},
+        extractedContradictions: [],
+        messages: [],
+        tokenConsumed: 0,
+        createdAt,
+        updatedAt: createdAt,
+      }
+      const saved = await upsertSession(newSession)
+      const sid = saved.id
       setSessionId(sid)
       navigate({ to: '/lab/$sessionId', params: { sessionId: sid } })
 
@@ -455,6 +503,10 @@ export default function LabPage() {
   ) => {
     const sid = overrideSid ?? sessionId
     if (!sid || !user?.id || isStreaming) return
+    if (!privacyAccepted) {
+      toast.error('请先确认隐私与治理告知')
+      return
+    }
 
     const currentMsgs = overrideMsgs ?? messages
     const currentStage = overrideStage ?? stage
@@ -478,81 +530,48 @@ export default function LabPage() {
     setMessages(msgsWithPlaceholder)
 
     try {
-      const token = await blink.auth.getValidToken()
-      const resp = await fetch(EDGE_FN, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: 'interview_turn',
-          sessionId: sid,
-          userMessage: userText,
-          messages: newMsgs.filter(m => m.role !== 'system'),
-          userId: user.id,
-          currentStage,
-          turnCount: currentTurns,
-        }),
-      })
-
-      if (!resp.ok) throw new Error('Network error')
-
-      const reader = resp.body!.getReader()
-      const decoder = new TextDecoder()
-      let aiContent = ''
-      let newStage: SessionStage = currentStage
-      let newTurns = currentTurns + (userText ? 1 : 0)
-      let newContradictions = [...currentContradictions]
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const text = decoder.decode(value)
-        const lines = text.split('\n')
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6))
-              if (data.type === 'text') {
-                aiContent += data.chunk
-                setMessages(prev => {
-                  const updated = [...prev]
-                  const lastIdx = updated.length - 1
-                  if (updated[lastIdx]?.role === 'ai') {
-                    updated[lastIdx] = { ...updated[lastIdx], content: aiContent }
-                  }
-                  return updated
-                })
-              }
-              if (data.type === 'done') {
-                // Use data.stage directly (not data.detectedStage)
-                if (data.stage) {
-                  newStage = data.stage as SessionStage
-                  setStage(newStage)
-                }
-                if (data.turnCount !== undefined) {
-                  newTurns = data.turnCount
-                  setTurnCount(newTurns)
-                }
-                // Merge new contradictions
-                if (data.contradictions && Array.isArray(data.contradictions)) {
-                  const incoming: Contradiction[] = data.contradictions
-                  const existingIds = new Set(newContradictions.map(c => c.id))
-                  const merged = [
-                    ...newContradictions,
-                    ...incoming.filter(c => !existingIds.has(c.id)),
-                  ]
-                  newContradictions = merged
-                  setContradictions(merged)
-                }
-              }
-            } catch {
-              // malformed SSE chunk, skip
-            }
+      setRuntimeWarning(null)
+      let streamedReply = ''
+      const data = await createInterviewTurnStream({
+        sessionId: sid,
+        userMessage: userText,
+        messages: newMsgs.filter(m => m.role !== 'system'),
+        userId: user.id,
+        currentStage,
+        turnCount: currentTurns,
+        maxTurns: 30,
+      }, {
+        onEvent: ({ event, data: streamData }) => {
+          if (event === 'chunk') {
+            streamedReply += String(streamData.delta ?? '')
+            setMessages([
+              ...newMsgs,
+              { role: 'ai', stage: currentStage, content: streamedReply, timestamp: new Date().toISOString() },
+            ])
           }
-        }
+        },
+      })
+      const aiContent = String(data.assistantReply ?? '')
+      const newStage = (data.currentStage ?? currentStage) as SessionStage
+      const newTurns = Number(data.session?.turnCount ?? (currentTurns + (userText ? 1 : 0)))
+      const incomingContradictions = Array.isArray(data.contradictions) ? data.contradictions as Contradiction[] : []
+      const normalizedReturnedSession = data.session ? normalizeSession(data.session) : null
+      const existingIds = new Set(currentContradictions.map(c => c.id))
+      const newContradictions = [
+        ...currentContradictions,
+        ...incomingContradictions.filter(c => !existingIds.has(c.id)),
+      ]
+      setStage(newStage)
+      setTurnCount(newTurns)
+      setContradictions(newContradictions)
+      const nextSessionMeta = {
+        stateContext: normalizedReturnedSession?.stateContext,
+        readiness: normalizedReturnedSession?.readiness ?? false,
+        offTopicCount: normalizedReturnedSession?.offTopicCount ?? 0,
+        badCaseFlags: normalizedReturnedSession?.badCaseFlags ?? [],
+        completionReason: normalizedReturnedSession?.completionReason ?? null,
       }
+      setSessionMeta(nextSessionMeta)
 
       // Finalize AI message
       const finalMsgs: Message[] = [
@@ -561,14 +580,18 @@ export default function LabPage() {
       ]
       setMessages(finalMsgs)
       setTurnCount(newTurns)
-
-      // Deduct token
-      await deductTokens(1)
+      await refetchProfile()
 
       // Save to DB (include contradictions)
-      await saveSessionToDB(sid, finalMsgs, newStage, newTurns, newContradictions)
-    } catch {
-      toast.error('消息发送失败，请重试')
+      await saveSessionToDB(sid, finalMsgs, newStage, newTurns, newContradictions, 'IN_PROGRESS', nextSessionMeta)
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('402')) {
+        toast.error('Token 余额不足，无法继续问询')
+      } else if (error instanceof Error && error.message.includes('Missing runtime function URL')) {
+        setRuntimeWarning(`未配置问询函数路由，请设置系统配置 ${RUNTIME_CONFIG_KEYS.interview} 或环境变量 ${getRuntimeFunctionEnvName('interview')}`)
+      } else {
+        toast.error('消息发送失败，请重试')
+      }
       // Remove placeholder
       setMessages(prev => prev.filter((_, i) => i < prev.length - 1))
     } finally {
@@ -587,41 +610,74 @@ export default function LabPage() {
     if (!sessionId || !user?.id) return
     setIsGeneratingReport(true)
     try {
-      const token = await blink.auth.getValidToken()
-      const resp = await fetch(EDGE_FN, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: 'generate_report',
-          sessionId,
-          userId: user.id,
-          messages: messages.filter(m => m.role !== 'system'),
-        }),
+      setRuntimeWarning(null)
+      const job = await createReportJob({
+        sessionId,
+        userId: user.id,
+        messages: messages.filter(m => m.role !== 'system'),
       })
-      const data = await resp.json()
-      if (data.reportId) {
-        await saveSessionToDB(sessionId, messages, stage, turnCount, contradictions, 'COMPLETED')
-        navigate({ to: '/insight/$reportId', params: { reportId: data.reportId } })
+      setReportJobProgress({
+        status: job.status,
+        progress: job.progress,
+        label: Array.isArray(job.payload?.timeline) ? String((job.payload.timeline as Array<{ label?: string }>).slice(-1)[0]?.label ?? '') : undefined,
+      })
+      if (job.report?.id) {
+        await refetchProfile()
+        await saveSessionToDB(sessionId, messages, stage, turnCount, contradictions, 'COMPLETED', sessionMeta)
+        navigate({ to: '/insight/$reportId', params: { reportId: job.report.id } })
       } else {
         toast.error('报告生成失败')
       }
-    } catch {
-      toast.error('报告生成失败，请重试')
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('402')) {
+        toast.error('Token 余额不足，无法生成报告')
+      } else if (error instanceof Error && error.message.includes('Missing runtime function URL')) {
+        setRuntimeWarning(`未配置问询函数路由，请设置系统配置 ${RUNTIME_CONFIG_KEYS.interview}、环境变量 ${getRuntimeFunctionEnvName('interview')}，或统一 API 基址 ${getRuntimeApiBaseEnvName()}`)
+      } else {
+        toast.error('报告生成失败，请重试')
+      }
     } finally {
       setIsGeneratingReport(false)
     }
   }
 
-  const canGenerateReport = turnCount >= 15 || stage === 'CONVERGE' || stage === 'COMPLETE'
+  const canGenerateReport = turnCount >= 15 || stage === 'CONVERGE' || stage === 'REPORT_READY' || stage === 'COMPLETE'
+
+  const handleAcceptPrivacy = () => {
+    setPrivacyAccepted(true)
+    try {
+      window.localStorage.setItem(privacyStorageKey, 'accepted')
+    } catch {
+      // ignore
+    }
+    toast.success('已确认隐私告知')
+  }
+
+  const exportTranscript = () => {
+    if (!sessionId) return
+    const content = buildTranscriptMarkdown({
+      sessionId,
+      stage,
+      turnCount,
+      readiness: sessionMeta.readiness ?? false,
+      badCaseFlags: sessionMeta.badCaseFlags ?? [],
+      messages,
+    })
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `Ariadne_Transcript_${sessionId.slice(-6)}.md`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    toast.success('会话已导出')
+  }
 
   // Placeholder text by stage
   const inputPlaceholder =
     stage === 'PRESS'
       ? 'Ariadne 正在施压 — 你准备好了吗?...'
-      : stage === 'CONVERGE' || stage === 'COMPLETE'
+      : stage === 'CONVERGE' || stage === 'REPORT_READY' || stage === 'COMPLETE'
       ? '整合阶段 — 分享你的最终洞察...'
       : '输入你的回应... (Enter 发送 · Shift+Enter 换行)'
 
@@ -674,6 +730,39 @@ export default function LabPage() {
               <span>每轮消耗 1 Token · 当前余额: {profile?.tokenBalance ?? 0}</span>
             </div>
 
+            <div className="rounded-lg border border-border/60 bg-muted/20 p-3 text-left space-y-2">
+              <p className="text-[11px] uppercase tracking-widest text-muted-foreground">治理提醒</p>
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                <li>· 发散阶段优先扩展叙事素材，不急于下结论</li>
+                <li>· 施压阶段会主动对齐矛盾点，可能带来不适</li>
+                <li>· 收敛阶段建议给出清晰偏好、边界与关系判断</li>
+              </ul>
+            </div>
+
+            <div className={`rounded-lg border p-3 text-left space-y-2 ${privacyAccepted ? 'border-primary/30 bg-primary/5' : 'border-[hsl(45,90%,55%)]/30 bg-[hsl(45,90%,55%)]/8'}`}>
+              <div className="flex items-center gap-2">
+                <ShieldCheck className={`h-4 w-4 ${privacyAccepted ? 'text-primary' : 'text-[hsl(45,90%,65%)]'}`} />
+                <p className="text-[11px] uppercase tracking-widest text-muted-foreground">隐私与使用告知</p>
+              </div>
+              <ul className="space-y-1 text-xs text-muted-foreground">
+                <li>· 问询内容会被持久化，用于生成报告、bad-case 复盘与治理回放</li>
+                <li>· 请不要提交身份证号、住址、银行卡、精确联系方式等高敏信息</li>
+                <li>· 继续即表示你同意系统在治理范围内处理本次会话记录</li>
+              </ul>
+              {!privacyAccepted && (
+                <Button size="sm" variant="outline" className="h-8 text-xs border-primary/40 text-primary hover:bg-primary/10" onClick={handleAcceptPrivacy}>
+                  我已知晓并同意
+                </Button>
+              )}
+            </div>
+
+            {runtimeWarning && (
+              <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg p-3">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                <span>{runtimeWarning}</span>
+              </div>
+            )}
+
             {(profile?.tokenBalance ?? 0) < 5 && (
               <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg p-3">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -684,7 +773,7 @@ export default function LabPage() {
             <Button
               className="w-full h-12 text-base font-semibold glow-primary"
               onClick={startSession}
-              disabled={isStarting || (profile?.tokenBalance ?? 0) < 5}
+              disabled={isStarting || (profile?.tokenBalance ?? 0) < 5 || !privacyAccepted}
             >
               {isStarting ? '初始化中...' : '开始问询'}
             </Button>
@@ -749,6 +838,13 @@ export default function LabPage() {
           <div className="text-center space-y-3">
             <p className="text-foreground font-semibold">正在生成你的洞见报告...</p>
             <p className="text-muted-foreground text-sm">Ariadne 正在整合所有对话脉络</p>
+            {reportJobProgress && (
+              <div className="space-y-1 text-xs text-muted-foreground">
+                <p>状态：{reportJobProgress.status}</p>
+                <p>进度：{reportJobProgress.progress}%</p>
+                {reportJobProgress.label && <p>{reportJobProgress.label}</p>}
+              </div>
+            )}
           </div>
         </LoadingOverlay>
       )}
@@ -799,6 +895,25 @@ export default function LabPage() {
         {/* Right: Turn count + contradictions + report button */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
           <span className="text-xs text-muted-foreground hidden sm:block">轮次 {turnCount}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[11px] h-7 border-border text-muted-foreground hover:text-foreground"
+            onClick={exportTranscript}
+          >
+            <Download className="h-3.5 w-3.5 mr-1" />
+            导出会话
+          </Button>
+          <div className="hidden md:flex items-center gap-1.5">
+            <Badge variant="outline" className={`text-[9px] h-5 ${sessionMeta.readiness ? 'border-primary/40 text-primary' : 'border-[hsl(45,90%,55%)]/40 text-[hsl(45,90%,65%)]'}`}>
+              {sessionMeta.readiness ? 'REPORT READY' : 'COLLECTING'}
+            </Badge>
+            {(sessionMeta.badCaseFlags ?? []).slice(0, 2).map(flag => (
+              <Badge key={flag} variant="outline" className="text-[9px] h-5 border-destructive/40 text-destructive">
+                {flag}
+              </Badge>
+            ))}
+          </div>
 
           {/* Contradiction badge button */}
           <button
@@ -831,6 +946,29 @@ export default function LabPage() {
 
       {/* ── Messages ────────────────────────────────────────────────────────── */}
       <div className="relative z-10 flex-1 overflow-y-auto px-4 py-4 space-y-4">
+        {(sessionMeta.stateContext || (sessionMeta.badCaseFlags?.length ?? 0) > 0 || sessionMeta.completionReason) && (
+          <div className="max-w-3xl mx-auto rounded-xl border border-border/60 bg-card/80 backdrop-blur-sm p-3 space-y-2">
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="outline" className={`text-[10px] ${stageConfig[stage].color}`}>
+                {stage}
+              </Badge>
+              <Badge variant="outline" className="text-[10px] border-border text-muted-foreground">
+                offTopic {sessionMeta.offTopicCount ?? 0}
+              </Badge>
+              {(sessionMeta.stateContext?.activeDimensions ?? []).slice(0, 4).map(item => (
+                <Badge key={item} variant="outline" className="text-[10px] border-primary/30 text-primary">
+                  {item}
+                </Badge>
+              ))}
+            </div>
+            {sessionMeta.completionReason && (
+              <p className="text-xs text-muted-foreground">completionReason: {sessionMeta.completionReason}</p>
+            )}
+            {(sessionMeta.badCaseFlags?.length ?? 0) > 0 && (
+              <p className="text-xs text-destructive">badCaseFlags: {sessionMeta.badCaseFlags?.join(' · ')}</p>
+            )}
+          </div>
+        )}
         {messages.filter(m => m.role !== 'system').map((msg, idx) => {
           const isAI = msg.role === 'ai'
           const isLastAI = isAI && idx === messages.length - 1 && isStreaming
@@ -881,6 +1019,22 @@ export default function LabPage() {
         }`}
       >
         <div className="max-w-3xl mx-auto space-y-2">
+          {runtimeWarning && (
+            <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-lg p-3">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              <span>{runtimeWarning}</span>
+            </div>
+          )}
+
+          {!privacyAccepted && (
+            <div className="flex items-start justify-between gap-3 text-xs text-[hsl(45,90%,65%)] bg-[hsl(45,90%,55%)]/10 border border-[hsl(45,90%,55%)]/20 rounded-lg p-3">
+              <span>发送前需先确认隐私与治理告知，避免提交高敏个人信息。</span>
+              <Button size="sm" variant="outline" className="h-7 text-[10px] border-primary/40 text-primary hover:bg-primary/10" onClick={handleAcceptPrivacy}>
+                立即确认
+              </Button>
+            </div>
+          )}
+
           <div className="flex gap-2 items-end">
             <Textarea
               ref={textareaRef}
@@ -909,16 +1063,19 @@ export default function LabPage() {
                   : undefined
               }
               onClick={() => inputValue.trim() && sendMessage(inputValue.trim())}
-              disabled={isStreaming || !inputValue.trim()}
+              disabled={isStreaming || !inputValue.trim() || !privacyAccepted}
             >
               <Send className="h-4 w-4" />
             </Button>
           </div>
           <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
             <span>余额: {profile?.tokenBalance ?? 0} Token · 每轮消耗 1</span>
-            {canGenerateReport && (
-              <span className="text-primary">已达可生成报告条件</span>
-            )}
+            <div className="flex items-center gap-3">
+              <span>当前阶段：{stage}</span>
+              {canGenerateReport && (
+                <span className="text-primary">已达可生成报告条件</span>
+              )}
+            </div>
           </div>
         </div>
       </div>

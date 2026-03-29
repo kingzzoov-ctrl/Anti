@@ -1,4 +1,5 @@
-import { createClient } from "npm:@blinkdotnew/sdk";
+const __deprecated = true;
+import { ARIADNE_ICEBREAKER_PROMPT, ARIADNE_MATCH_PROMPT } from "../_shared/ariadnePrompts.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,202 +7,99 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, content-type",
 };
 
-const MATCH_SYSTEM_PROMPT = `You are a deep resonance analyst for Ariadne.
-You receive two psychological profiles (insight reports) and must perform a precise compatibility analysis.
+const MATCH_SYSTEM_PROMPT = ARIADNE_MATCH_PROMPT;
 
-Your analysis must cover:
-1. Core Resonance Points: Where these two people fundamentally align (shared needs, complementary fears)
-2. Tension Zones (火药桶): Specific combinations of their patterns that will create recurring friction
-3. Power Dynamics: How their V2 (power) and V3 (boundary) profiles interact
-4. Growth Potential: What each person could learn from or through the other
-5. Critical Warning: If compatibility is genuinely low, state it clearly without sugarcoating
-
-Format your response as structured JSON:
-{
-  "resonanceScore": 0.0-1.0,
-  "resonancePoints": ["...", "..."],
-  "tensionZones": [
-    { "title": "...", "description": "...", "severity": 0.0-1.0 }
-  ],
-  "powerDynamics": "...",
-  "growthPotential": "...",
-  "criticalWarning": "..." or null,
-  "icebreakers": ["...", "...", "..."],
-  "summary": "One paragraph executive summary"
+function buildRelationshipFit(resonanceScore: number) {
+  if (resonanceScore >= 0.78) {
+    return {
+      label: "高共振",
+      score: Math.round(resonanceScore * 100),
+      description: "双方在核心互动节律上具有较高兼容性，可进入深度连接观察期。",
+    };
+  }
+  if (resonanceScore >= 0.62) {
+    return {
+      label: "可培养",
+      score: Math.round(resonanceScore * 100),
+      description: "存在稳定共鸣基础，但仍需要通过沟通验证边界与推进节奏。",
+    };
+  }
+  return {
+    label: "谨慎观察",
+    score: Math.round(resonanceScore * 100),
+    description: "局部维度可对接，但关系推进容易受张力点影响，需要慢速试探。",
+  };
 }
 
-Be analytically honest. Low compatibility gets a low score. Do not fabricate resonance.
-Respond in Chinese.`;
-
-// ── Helper: read system_configs ───────────────────────────────────────────────
-async function getSystemConfig(blink: any, key: string, defaultValue: string): Promise<string> {
-  try {
-    const results = await blink.db.systemConfigs.list({ where: { key }, limit: 1 });
-    if (results.length > 0) return (results[0] as any).value as string;
-  } catch { /* ignore */ }
-  return defaultValue;
+function buildUnlockMilestones() {
+  return [
+    { stage: 0, label: "匿名试探", requirement: "建立连接后可见，适合确认基本沟通意愿", unlocked: true },
+    { stage: 1, label: "主题交换", requirement: "累计 5 条有效消息，进入稳定来回", unlocked: false },
+    { stage: 2, label: "边界试探", requirement: "累计 10 条有效消息，可讨论关系节奏与边界", unlocked: false },
+    { stage: 3, label: "深层解锁", requirement: "累计 15 条有效消息，进入完全解锁阶段", unlocked: false },
+  ];
 }
 
-// ── Helper: upsert exposure log for one user ─────────────────────────────────
-async function upsertExposureLog(blink: any, targetUserId: string, today: string): Promise<void> {
+function normalizeMatchData(matchData: Record<string, unknown>) {
+  const rawScore = Number(matchData.resonanceScore ?? 0);
+  const resonanceScore = rawScore > 1 ? rawScore / 100 : rawScore;
+  const relationshipFit = buildRelationshipFit(resonanceScore);
+  const unlockMilestones = buildUnlockMilestones();
+
+  return {
+    resonanceScore,
+    resonancePoints: Array.isArray(matchData.resonancePoints) ? matchData.resonancePoints.map(String) : [],
+    tensionZones: Array.isArray(matchData.tensionZones)
+      ? matchData.tensionZones.map((zone) => ({
+          title: String((zone as Record<string, unknown>).title ?? "未命名张力点"),
+          description: String((zone as Record<string, unknown>).description ?? ""),
+          severity: Number((zone as Record<string, unknown>).severity ?? 0),
+        }))
+      : [],
+    powerDynamics: String(matchData.powerDynamics ?? ""),
+    growthPotential: String(matchData.growthPotential ?? ""),
+    criticalWarning: matchData.criticalWarning ? String(matchData.criticalWarning) : null,
+    icebreakers: Array.isArray(matchData.icebreakers) ? matchData.icebreakers.map(String).slice(0, 5) : [],
+    summary: String(matchData.summary ?? ""),
+    relationshipFit,
+    guidance: Array.isArray(matchData.guidance) ? matchData.guidance.map(String).slice(0, 4) : [],
+    unlockMilestones,
+  };
+}
+
+function extractReportMeta(report: Record<string, unknown>) {
   try {
-    const existing = await blink.db.exposureLogs.list({
-      where: { userId: targetUserId, date: today },
-      limit: 1,
+    const rawContent = typeof report.rawContent === "string"
+      ? JSON.parse(report.rawContent as string)
+      : (report.rawContent as Record<string, unknown> | undefined) ?? {};
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "authorization, content-type",
+    };
+
+    function jsonResponse(status: number, body: Record<string, unknown>) {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+        },
+      });
+    }
+
+    Deno.serve((req: Request) => {
+      if (req.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders });
+      }
+
+      return jsonResponse(410, {
+        error: "deprecated_function",
+        message: "This Blink function has been retired. Use the Ariadne FastAPI backend endpoints instead.",
+        target: "/api/v1/ariadne/match",
+        architecture: "fastapi-postgres-redis",
+      });
     });
-    if (existing.length > 0) {
-      const rec = existing[0] as Record<string, unknown>;
-      await blink.db.exposureLogs.update(rec.id as string, {
-        dailyExposureCount: Number(rec.dailyExposureCount || 0) + 1,
-      });
-    } else {
-      await blink.db.exposureLogs.create({
-        id: `exp_${targetUserId}_${today}_${Math.random().toString(36).slice(2, 6)}`,
-        userId: targetUserId,
-        date: today,
-        dailyExposureCount: 1,
-      });
-    }
-  } catch (err) {
-    console.error("upsertExposureLog error:", err);
-  }
-}
-
-// ── Main handler ──────────────────────────────────────────────────────────────
-async function handler(req: Request): Promise<Response> {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
-  }
-
-  try {
-    const projectId = Deno.env.get("BLINK_PROJECT_ID");
-    const secretKey = Deno.env.get("BLINK_SECRET_KEY");
-    if (!projectId || !secretKey) {
-      return new Response(JSON.stringify({ error: "Missing config" }), {
-        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const blink = createClient({ projectId, secretKey });
-    const auth = await blink.auth.verifyToken(req.headers.get("Authorization"));
-    if (!auth.valid) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const body = await req.json();
-    const { action, userId, targetReportId, threadId, matchId: bodyMatchId, targetUserId } = body;
-
-    // ── Action: update_exposure ───────────────────────────────────────────────
-    if (action === "update_exposure") {
-      if (!targetUserId) {
-        return new Response(JSON.stringify({ error: "Missing targetUserId" }), {
-          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const today = new Date().toISOString().slice(0, 10);
-      await upsertExposureLog(blink, targetUserId, today);
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // ── Action: Discovery Search ──────────────────────────────────────────────
-    if (action === "discover") {
-      // Get current user's latest public report
-      const userReports = await blink.db.insightReports.list({
-        where: { userId, isPublic: "1" },
-        orderBy: { createdAt: "desc" },
-        limit: 1,
-      });
-
-      if (userReports.length === 0) {
-        return new Response(JSON.stringify({ error: "No report found. Complete an interview first." }), {
-          status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      const userReport = userReports[0] as Record<string, unknown>;
-      const userFeature = JSON.parse((userReport.vFeature as string) || "{}") as Record<string, number>;
-
-      // Read config values
-      const [decayFactorStr, thresholdStr, consistencyMinStr] = await Promise.all([
-        getSystemConfig(blink, "MATCH_DECAY_FACTOR", "0.05"),
-        getSystemConfig(blink, "MATCH_RESONANCE_THRESHOLD", "0.55"),
-        getSystemConfig(blink, "CONSISTENCY_MIN_THRESHOLD", "0.6"),
-      ]);
-      const decayFactor = parseFloat(decayFactorStr) || 0.05;
-      const threshold = parseFloat(thresholdStr) || 0.55;
-      const consistencyMin = parseFloat(consistencyMinStr) || 0.6;
-
-      // Get all public reports excluding user's own
-      const allReports = await blink.db.insightReports.list({
-        where: { isPublic: "1" },
-        orderBy: { createdAt: "desc" },
-        limit: 100,
-      });
-
-      const candidates = allReports.filter(
-        (r) => (r as Record<string, unknown>).userId !== userId
-      ) as Record<string, unknown>[];
-
-      // Filter out low-fidelity reports below consistency threshold
-      const qualifiedCandidates = candidates.filter(
-        (r) => Number(r.consistencyScore || 0) >= consistencyMin
-      );
-
-      // Collect candidate userIds for batch exposure query
-      const today = new Date().toISOString().slice(0, 10);
-      const candidateUserIds = qualifiedCandidates.map((r) => r.userId as string);
-
-      // Batch-query exposure_logs for today for all candidates
-      let exposureMap: Record<string, number> = {};
-      if (candidateUserIds.length > 0) {
-        try {
-          const exposureLogs = await blink.db.exposureLogs.list({
-            where: { date: today },
-            limit: 500,
-          });
-          for (const log of exposureLogs as Record<string, unknown>[]) {
-            const uid = log.userId as string;
-            if (candidateUserIds.includes(uid)) {
-              exposureMap[uid] = Number(log.dailyExposureCount || 0);
-            }
-          }
-        } catch (err) {
-          console.error("Exposure log query error:", err);
-        }
-      }
-
-      // Compute scores with exposure decay
-      const scored = qualifiedCandidates.map((r) => {
-        let feature: Record<string, number> = {};
-        try {
-          feature = JSON.parse((r.vFeature as string) || "{}") as Record<string, number>;
-        } catch { /* skip */ }
-
-        const consistencyScore = Number(r.consistencyScore) || 0;
-        const resonanceScore = computeResonanceScore(userFeature, feature, consistencyScore);
-
-        const exposureCount = exposureMap[r.userId as string] || 0;
-        const finalScore = resonanceScore * Math.max(0, 1 - exposureCount * decayFactor);
-
-        return {
-          reportId: r.id as string,
-          userId: r.userId as string,
-          anonymousId: `Anon_${(r.id as string).slice(-6)}`,
-          resonanceScore: Math.round(finalScore * 100) / 100,
-          featureVector: feature,
-          consistencyScore,
-          isLowFidelity: consistencyScore < consistencyMin,
-          overlapDimensions: getOverlapDimensions(userFeature, feature),
-        };
-      });
-
-      // Filter below threshold and sort
-      const results = scored
-        .filter((s) => s.resonanceScore >= threshold)
         .sort((a, b) => b.resonanceScore - a.resonanceScore)
         .slice(0, 20);
 
@@ -348,14 +246,16 @@ async function handler(req: Request): Promise<Response> {
             };
           }
 
+          const normalizedMatchData = normalizeMatchData(matchData);
+
           // Save match record to DB
           try {
             await blink.db.matchRecords.create({
               id: matchId,
               userIdA: userId,
               userIdB: targetReport.userId as string,
-              resonanceScore: String(matchData.resonanceScore || 0),
-              matchAnalysis: JSON.stringify(matchData),
+              resonanceScore: String(normalizedMatchData.resonanceScore || 0),
+              matchAnalysis: JSON.stringify(normalizedMatchData),
               status: "complete",
             });
           } catch (dbErr) {
@@ -365,7 +265,7 @@ async function handler(req: Request): Promise<Response> {
           // Send final done event
           send(JSON.stringify({
             type: "done",
-            match: matchData,
+            match: normalizedMatchData,
             matchId,
             tokenBalance: newBalance,
           }));
@@ -454,7 +354,7 @@ async function handler(req: Request): Promise<Response> {
             messages: [
               {
                 role: "system",
-                content: `You are a conversation starter expert for Ariadne. Generate exactly 3 icebreaker questions that would naturally spark a deep, authentic conversation between two people based on their psychological profiles. Return ONLY a JSON array of 3 strings. Respond in Chinese.`,
+                content: ARIADNE_ICEBREAKER_PROMPT,
               },
               {
                 role: "user",
@@ -571,3 +471,34 @@ function getOverlapDimensions(a: Record<string, number>, b: Record<string, numbe
 }
 
 Deno.serve(handler);
+
+if (__deprecated) {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, content-type',
+  };
+
+  function json(body: Record<string, unknown>, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  Deno.serve((req: Request) => {
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    return json(
+      {
+        error: 'deprecated_function',
+        message: 'Legacy Blink match function has been retired. Use the FastAPI Ariadne backend instead.',
+        target: '/api/v1/ariadne/match/discover | /api/v1/ariadne/match/deep | /api/v1/ariadne/match/icebreakers',
+        architecture: 'fastapi-postgres-redis',
+      },
+      410,
+    );
+  });
+}

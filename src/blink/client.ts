@@ -1,7 +1,3 @@
-import { createClient } from '@blinkdotnew/sdk'
+import { localApi } from '../lib/localApi'
 
-export const blink = createClient({
-  projectId: import.meta.env.VITE_BLINK_PROJECT_ID,
-  publishableKey: import.meta.env.VITE_BLINK_PUBLISHABLE_KEY,
-  auth: { mode: 'managed' },
-})
+export const blink = localApi

@@ -2,8 +2,18 @@
 
 export type UserTier = 'Free' | 'Ad-Reward' | 'Premium'
 
-export type SessionStage = 'DIVERGENT' | 'PRESS' | 'CONVERGE' | 'COMPLETE'
+export type SessionStage = 'DIVERGENT' | 'PRESS' | 'CONVERGE' | 'REPORT_READY' | 'COMPLETE'
 export type SessionStatus = 'IN_PROGRESS' | 'PAUSED' | 'COMPLETED' | 'GENERATING_REPORT'
+
+export interface SessionStateContext {
+  readiness?: boolean
+  offTopicCount?: number
+  badCaseFlags?: string[]
+  completionReason?: string | null
+  activeDimensions?: string[]
+  consistencyProxy?: number
+  stateContextVersion?: string
+}
 
 export interface UserProfile {
   id: string
@@ -11,7 +21,7 @@ export interface UserProfile {
   displayName?: string
   tier: UserTier
   tokenBalance: number
-  notificationChannels: Record<string, string[]>
+  notificationChannels: Record<string, unknown>
   matchingEnabled: boolean
   isAdmin: boolean
   createdAt: string
@@ -45,6 +55,11 @@ export interface InterviewSession {
   extractedContradictions: Contradiction[]
   messages: Message[]
   tokenConsumed: number
+  stateContext?: SessionStateContext
+  readiness?: boolean
+  offTopicCount?: number
+  badCaseFlags?: string[]
+  completionReason?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -66,33 +81,209 @@ export interface ReportSection {
   keyPoints: string[]
 }
 
+export type ReportConfidence = 'high' | 'medium' | 'low'
+export type ReportChapterStatus = 'complete' | 'partial'
+
+export interface ReportChapter {
+  id:
+    | 'profile'
+    | 'relationship_positioning'
+    | 'surface_preferences'
+    | 'deep_needs'
+    | 'cognitive_pattern'
+    | 'preference_need_mapping'
+    | 'relationship_pattern'
+    | 'guidance'
+    | 'probability_assessment'
+    | 'closing'
+    | string
+  title: string
+  summary: string
+  content: string
+  keyPoints: string[]
+  confidence: ReportConfidence
+  evidenceQuotes: string[]
+  status: ReportChapterStatus
+}
+
+export interface ReportMeta {
+  schemaVersion: string
+  promptAssetVersion: string
+  reportType: 'brief' | 'detailed' | string
+  lineageId?: string
+  generatedAt: string
+  language: string
+  sourceSessionId?: string
+  turnCount?: number
+  stateContextVersion?: string
+}
+
+export interface LegacyReportSections {
+  needs?: ReportSection
+  fears?: ReportSection
+  patterns?: ReportSection
+  convergence?: ReportSection
+}
+
+export interface FeatureAnalysis {
+  vFeature: FeatureVector
+  consistencyScore: number
+  vectorNarrative?: string
+}
+
+export interface ReportQualityFlags {
+  isLowConfidence: boolean
+  hasOpenContradictions: boolean
+  coverageWarnings: string[]
+  missingDimensions?: string[]
+}
+
+export interface ReportStateContext {
+  lastStage?: string
+  primaryFocusDimension?: string
+  relationshipGoal?: string
+  defenseMode?: string
+  communicationStyle?: string
+  latestUserSignal?: string
+}
+
+export interface ReportRawContent {
+  reportMeta?: ReportMeta
+  summary?: string
+  legacySections?: LegacyReportSections
+  chapters?: ReportChapter[]
+  contradictions?: Contradiction[]
+  featureAnalysis?: FeatureAnalysis
+  qualityFlags?: ReportQualityFlags
+  keywordSignals?: string[]
+  dimensionLabels?: Record<string, string>
+  stateContext?: ReportStateContext
+  needs?: ReportSection
+  fears?: ReportSection
+  patterns?: ReportSection
+  convergence?: ReportSection
+}
+
 export interface InsightReport {
   id: string
   userId: string
   title: string
-  rawContent: {
-    needs: ReportSection
-    fears: ReportSection
-    patterns: ReportSection
-    contradictions: Contradiction[]
-    convergence: ReportSection
-    summary: string
-  }
+  rawContent: ReportRawContent
   vFeature: FeatureVector
+  vEmbedding?: number[]
   consistencyScore: number
   isPublic: boolean
   version: number
+  lineageId?: string
+  sourceSessionId?: string
+  versionCount?: number
+  isLatestVersion?: boolean
+  latestReportId?: string
+  previousVersionId?: string | null
   createdAt: string
+}
+
+export interface ReportJob {
+  id: string
+  userId: string
+  sessionId: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  progress: number
+  reportId?: string | null
+  errorMessage?: string | null
+  payload: Record<string, unknown>
+  report?: InsightReport | null
+  createdAt: string
+  updatedAt: string
+  startedAt?: string | null
+  completedAt?: string | null
 }
 
 export interface MatchRecord {
   id: string
   userIdA: string
   userIdB: string
+  sourceReportId?: string
   resonanceScore: number
-  matchAnalysis: string
+  matchAnalysis: MatchAnalysisPayload | string
   status: 'pending' | 'analyzing' | 'complete'
   createdAt: string
+}
+
+export interface RelationshipFitSummary {
+  label: string
+  score: number
+  description: string
+}
+
+export interface TensionZone {
+  title: string
+  description: string
+  severity: number
+}
+
+export interface UnlockMilestone {
+  stage: 0 | 1 | 2 | 3
+  label: string
+  requirement: string
+  unlocked: boolean
+  requiredMessageCount?: number
+  remainingMessageCount?: number
+}
+
+export interface ThreadUnlockState {
+  effectiveMessageCount: number
+  currentStage: 0 | 1 | 2 | 3
+  nextStage?: 0 | 1 | 2 | 3 | null
+  nextStageRequiredMessageCount?: number | null
+  remainingMessageCount: number
+  isFullyUnlocked: boolean
+}
+
+export interface ThreadContactExchangeStatus {
+  allowed: boolean
+  requiredStage: 3
+  requiredMessageCount: number
+  remainingMessageCount: number
+  criticalWarning?: string | null
+  relationshipFitLabel?: string | null
+  relationshipFitScore?: number
+  severeZoneCount?: number
+  blockers?: string[]
+  reason: string
+}
+
+export interface ThreadTensionHandbook {
+  title: string
+  summary: string
+  criticalWarning?: string | null
+  guidance: string[]
+  hotspots: TensionZone[]
+  warnings: string[]
+}
+
+export interface ThreadStagePolicy {
+  stage: 0 | 1 | 2 | 3
+  label: string
+  allowedActions: string[]
+  blockedActions: string[]
+  guidance: string
+}
+
+export interface MatchAnalysisPayload {
+  resonanceScore: number
+  resonancePoints: string[]
+  tensionZones: TensionZone[]
+  powerDynamics: string
+  growthPotential: string
+  criticalWarning: string | null
+  icebreakers: string[]
+  summary: string
+  embeddingScore?: number
+  candidateSource?: 'vector-recall' | 'direct-report'
+  relationshipFit?: RelationshipFitSummary
+  guidance?: string[]
+  unlockMilestones?: UnlockMilestone[]
 }
 
 export interface DiscoveryCard {
@@ -100,9 +291,15 @@ export interface DiscoveryCard {
   anonymousId: string
   resonanceScore: number
   featureVector: FeatureVector
-  consistencyScore: boolean
+  consistencyScore: number
+  embeddingScore?: number
+  exposureCount?: number
+  visibilityScore?: number
   overlapDimensions: string[]
   isLowFidelity: boolean
+  relationshipFit?: RelationshipFitSummary
+  reportType?: string
+  chapterCount?: number
 }
 
 export interface SocialThread {
@@ -112,8 +309,13 @@ export interface SocialThread {
   matchId?: string
   unlockStage: 0 | 1 | 2 | 3
   icebreakers: string[]
-  tensionReport: string
+  tensionReport: MatchAnalysisPayload | string
   messages: ThreadMessage[]
+  unlockMilestones?: UnlockMilestone[]
+  unlockState?: ThreadUnlockState
+  stagePolicy?: ThreadStagePolicy
+  tensionHandbook?: ThreadTensionHandbook
+  contactExchangeStatus?: ThreadContactExchangeStatus
   createdAt: string
   updatedAt: string
 }
@@ -131,5 +333,19 @@ export interface SystemConfig {
   value: string
   type: 'int' | 'float' | 'string' | 'bool'
   description?: string
+  source?: 'system-config' | 'env-default' | string
   updatedAt: string
+}
+
+export interface StrategyAsset {
+  id: number
+  assetKey: string
+  version: string
+  assetType: string
+  title: string
+  content: string
+  sourcePath: string
+  isActive: boolean
+  createdAt?: string | null
+  updatedAt?: string | null
 }

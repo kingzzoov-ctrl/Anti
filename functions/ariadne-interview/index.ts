@@ -1,238 +1,36 @@
-import { createClient } from "npm:@blinkdotnew/sdk";
-
+const __deprecated = true;
+import {
+  ARIADNE_INTERVIEW_PROMPT,
+  ARIADNE_REPORT_PROMPT,
+  PROMPT_ASSET_VERSION,
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "authorization, content-type",
 };
 
-// ── Ariadne 问询状态机提示词 ──────────────────────────────────────────────
-const ARIADNE_SYSTEM_PROMPT = `You are Ariadne — a penetrating, empathetic psychological inquiry engine.
-Your purpose is NOT therapy, NOT casual chat. You are a precision instrument for uncovering the hidden architecture of someone's relational patterns.
-
-## Core Philosophy
-You operate through 3 stages:
-1. DIVERGENT: Open exploration. Draw out scenarios, memories, feelings with open-ended questions. Build a map.
-2. PRESS: Targeted pressure. Identify contradictions and press on them relentlessly but compassionately. Use the user's own words against their stated positions.
-3. CONVERGE: Crystallization. Synthesize patterns, name what you see, present insights with clarity.
-
-## Rules
-- NEVER ask multiple questions in one turn
-- NEVER accept surface-level answers — always dig one layer deeper
-- When you detect a contradiction: EXPLICITLY name it: "Earlier you said [X]. Now you're saying [Y]. Help me understand that gap."
-- Track inconsistencies across the conversation
-- In PRESS stage, be more direct and penetrating
-- Stay in Chinese (Mandarin) throughout
-- Max one insight reflection per 3 turns
-- If user is deflecting or giving vague answers, call it out directly
-
-## Stage Transitions
-- Move to PRESS after 8-10 turns of divergent questioning
-- Move to CONVERGE after contradictions have been fully exposed (typically turn 20+)
-- Signal stage change to frontend via: <<STAGE:PRESS>> or <<STAGE:CONVERGE>>
-
-## Contradiction Detection
-When you detect a contradiction, include this marker:
-<<CONTRADICTION:dimension=X,severity=0.X,statementA=...,statementB=...>>
-
-Respond only in Chinese. Be precise, be penetrating, be compassionate.`;
-
-const REPORT_GENERATION_PROMPT = `Based on this conversation, generate a comprehensive psychological insight report in JSON format.
-
-The report must include:
-{
-  "needs": {
-    "title": "核心需求",
-    "content": "...",
-    "keyPoints": ["...", "..."]
-  },
-  "fears": {
-    "title": "深层恐惧",
-    "content": "...",
-    "keyPoints": ["...", "..."]
-  },
-  "patterns": {
-    "title": "关系模式",
-    "content": "...",
-    "keyPoints": ["...", "..."]
-  },
-  "contradictions": [
-    {
-      "id": "c_001",
-      "dimension": "...",
-      "userStatementA": "...",
-      "userStatementB": "...",
-      "aiAnalysis": "...",
-      "severity": 0.85
-    }
-  ],
-  "convergence": {
-    "title": "收敛洞见",
-    "content": "...",
-    "keyPoints": ["...", "..."]
-  },
-  "summary": "One paragraph executive summary of this person's relational psychology"
+function jsonResponse(status: number, body: Record<string, unknown>) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
 }
 
-Also provide a 7-dimensional feature vector:
-{
-  "vFeature": {
-    "v1Security": 0.0-1.0,     // 0=独立回避, 1=焦虑融合
-    "v2Power": 0.0-1.0,        // 0=适应追随, 1=主导控制
-    "v3Boundary": 0.0-1.0,     // 0=开放共享, 1=极度防御
-    "v4Conflict": 0.0-1.0,     // 0=逃避冷战, 1=激烈对抗
-    "v5Emotion": 0.0-1.0,      // 0=钝感实用, 1=高敏共情
-    "v6Values": 0.0-1.0,       // 价值一致性得分
-    "v7Consistency": 0.0-1.0   // 自洽度系数
-  },
-  "consistencyScore": 0.0-1.0
-}
-
-Respond ONLY with the raw JSON, no markdown fences.`;
-
-// ── Helper: read a system config value ──────────────────────────────────────
-async function getSystemConfig(
-  blink: ReturnType<typeof createClient>,
-  key: string,
-  defaultValue: string
-): Promise<string> {
-  try {
-    const configs = await blink.db.systemConfigs.list({ where: { key }, limit: 1 });
-    if (configs.length > 0) {
-      return String((configs[0] as Record<string, unknown>).value ?? defaultValue);
-    }
-  } catch (_) {
-    // ignore and use default
-  }
-  return defaultValue;
-}
-
-// ── Helper: determine resolved stage ────────────────────────────────────────
-function resolveStage(
-  detectedStage: string | null,
-  currentTurns: number,
-  pressThreshold: number,
-  convergeThreshold: number,
-  existingStage: string
-): string {
-  if (detectedStage === "PRESS") return "PRESS";
-  if (detectedStage === "CONVERGE") return "CONVERGE";
-  if (currentTurns >= convergeThreshold) return "CONVERGE";
-  if (currentTurns >= pressThreshold) return "PRESS";
-  return existingStage || "DIVERGENT";
-}
-
-async function handler(req: Request): Promise<Response> {
+Deno.serve((req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-  try {
-    const projectId = Deno.env.get("BLINK_PROJECT_ID");
-    const secretKey = Deno.env.get("BLINK_SECRET_KEY");
-    if (!projectId || !secretKey) {
-      return new Response(
-        JSON.stringify({ error: "Missing server config" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    const blink = createClient({ projectId, secretKey });
-    const body = await req.json();
-    const { action, sessionId, userMessage, messages, userId, currentStage } = body;
-
-    // ── Action: get_session ─────────────────────────────────────────────────
-    if (action === "get_session") {
-      if (!sessionId || !userId) {
-        return new Response(
-          JSON.stringify({ error: "Missing sessionId or userId" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      const auth = await blink.auth.verifyToken(req.headers.get("Authorization"));
-      if (!auth.valid) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      const session = await blink.db.interviewSessions.get(sessionId) as Record<string, unknown> | null;
-      if (!session) {
-        return new Response(JSON.stringify({ error: "Session not found" }), {
-          status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      if (session.userId !== userId) {
-        return new Response(JSON.stringify({ error: "Forbidden" }), {
-          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      let parsedMessages: unknown[] = [];
-      let parsedContradictions: unknown[] = [];
-      let parsedContextVariables: Record<string, unknown> = {};
-
-      try { parsedMessages = JSON.parse(session.messages as string || "[]"); } catch (_) { /* use default */ }
-      try { parsedContradictions = JSON.parse(session.extractedContradictions as string || "[]"); } catch (_) { /* use default */ }
-      try { parsedContextVariables = JSON.parse(session.contextVariables as string || "{}"); } catch (_) { /* use default */ }
-
-      return new Response(
-        JSON.stringify({
-          session: {
-            ...session,
-            messages: parsedMessages,
-            extractedContradictions: parsedContradictions,
-            contextVariables: parsedContextVariables,
-          }
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // ── Action: interview_turn ───────────────────────────────────────────────
-    if (action === "interview_turn") {
-      if (!messages || !userId) {
-        return new Response(
-          JSON.stringify({ error: "Missing messages or userId" }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
-      const auth = await blink.auth.verifyToken(req.headers.get("Authorization"));
-      if (!auth.valid) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      const userProfiles = await blink.db.userProfiles.list({ where: { userId }, limit: 1 });
-      if (userProfiles.length === 0) {
-        return new Response(JSON.stringify({ error: "User profile not found" }), {
-          status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
-      }
-
-      const profile = userProfiles[0] as Record<string, unknown>;
-      const tokenBalance = Number(profile.tokenBalance) || 0;
-
-      const cfgKeys = {
-        interviewTurnCost: "TOKEN_COST_INTERVIEW_TURN",
-        interviewModel: "LLM_MODEL_INTERVIEW",
-        pressTurn: "INTERVIEW_PRESS_TURN",
-        convergeTurn: "INTERVIEW_CONVERGE_TURN",
-      };
-
-      const [costValue, modelName, pressThresholdStr, convergeThresholdStr] = await Promise.all([
-        getSystemConfig(blink, cfgKeys.interviewTurnCost, "2"),
-        getSystemConfig(blink, cfgKeys.interviewModel, "gpt-4.1-mini"),
-        getSystemConfig(blink, cfgKeys.pressTurn, "8"),
-        getSystemConfig(blink, cfgKeys.convergeTurn, "20"),
-      ]);
-
-      const tokenCost = Number(costValue);
-      const pressThreshold = Number(pressThresholdStr);
+  return jsonResponse(410, {
+    error: "deprecated_function",
+    message: "This Blink function has been retired. Use the Ariadne FastAPI backend endpoints instead.",
+    target: "/api/v1/ariadne/interview",
+    architecture: "fastapi-postgres-redis",
+  });
+});
       const convergeThreshold = Number(convergeThresholdStr);
 
       if (tokenBalance < tokenCost) {
@@ -480,7 +278,7 @@ async function handler(req: Request): Promise<Response> {
 
       let reportData: Record<string, unknown>;
       try {
-        reportData = JSON.parse(jsonText);
+        reportData = normalizeReportData(JSON.parse(jsonText));
       } catch {
         return new Response(
           JSON.stringify({ error: "Report generation failed — JSON parse error", raw: text }),
@@ -523,8 +321,8 @@ async function handler(req: Request): Promise<Response> {
         userId,
         title: `洞察报告 · ${new Date().toLocaleDateString("zh-CN")}`,
         rawContent: JSON.stringify(reportData),
-        vFeature: JSON.stringify((reportData.vFeature as Record<string, number>) || {}),
-        consistencyScore: String((reportData.consistencyScore as number) || 0),
+        vFeature: JSON.stringify((reportData.featureAnalysis as Record<string, unknown>)?.vFeature || (reportData.vFeature as Record<string, number>) || {}),
+        consistencyScore: String((reportData.featureAnalysis as Record<string, unknown>)?.consistencyScore || reportData.consistencyScore || 0),
         isPublic: "0",
         version: String(reportVersion),
         stageData: JSON.stringify(stageData),
@@ -568,3 +366,34 @@ async function handler(req: Request): Promise<Response> {
 }
 
 Deno.serve(handler);
+
+if (__deprecated) {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'authorization, content-type',
+  };
+
+  function json(body: Record<string, unknown>, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    });
+  }
+
+  Deno.serve((req: Request) => {
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    return json(
+      {
+        error: 'deprecated_function',
+        message: 'Legacy Blink interview function has been retired. Use the FastAPI Ariadne backend instead.',
+        target: '/api/v1/ariadne/interview/turn | /api/v1/ariadne/report/generate | /api/v1/ariadne/sessions',
+        architecture: 'fastapi-postgres-redis',
+      },
+      410,
+    );
+  });
+}
