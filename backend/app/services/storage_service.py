@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
+from math import sqrt
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.exposure_log import ExposureLog
+from app.models.ad_reward_claim import AdRewardClaim
 from app.models.insight_report import InsightReport
 from app.models.match_record import MatchRecord
 from app.models.session_state import SessionState
@@ -15,6 +17,10 @@ from app.models.social_thread import SocialThread
 from app.models.strategy_asset import StrategyAsset
 from app.models.system_config import SystemConfig
 from app.models.user_profile import UserProfile
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _report_meta(raw_content: dict[str, Any] | None) -> dict[str, Any]:
@@ -66,6 +72,8 @@ def _build_report_lineage_snapshot(db: Session, entity: InsightReport) -> dict[s
 
 
 THREAD_UNLOCK_REQUIREMENTS: dict[int, int] = {0: 0, 1: 5, 2: 10, 3: 15}
+THREAD_ACTIVE_STATUSES = {'active'}
+THREAD_COOLDOWN_STATUSES = {'cooldown'}
 THREAD_STAGE_POLICY: dict[int, dict[str, Any]] = {
     0: {
         'label': '匿名试探',
@@ -343,14 +351,63 @@ def _build_unlock_state(*, stage: int, message_count: int) -> dict[str, Any]:
     }
 
 
+def _parse_optional_datetime(value: str | datetime | None) -> datetime | None:
+    if value is None or value == '':
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace('Z', '+00:00')).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _normalize_thread_status(status: str | None, cooldown_until: datetime | None) -> str:
+    normalized = str(status or 'active').strip().lower()
+    if normalized in {'closed', 'archived'}:
+        return 'closed'
+    if normalized in {'cooldown', 'cooling', 'paused'}:
+        if cooldown_until and cooldown_until > _utcnow_naive():
+            return 'cooldown'
+        return 'active'
+    return 'active'
+
+
+def _build_thread_governance_state(*, status: str, cooldown_until: datetime | None, closed_at: datetime | None, governance_note: str | None) -> dict[str, Any]:
+    now = _utcnow_naive()
+    normalized_status = _normalize_thread_status(status, cooldown_until)
+    is_cooling = normalized_status == 'cooldown' and cooldown_until is not None and cooldown_until > now
+    is_closed = normalized_status == 'closed'
+    if is_closed:
+        label = '已关闭'
+        reason = '该线程已退出深度社交通道，不再占用匹配带宽。'
+    elif is_cooling:
+        label = '冷却中'
+        reason = '该线程处于冷却态，暂不允许继续发送消息，但已释放 discover 带宽。'
+    else:
+        label = '活跃中'
+        reason = '该线程仍占用深度社交通道名额。'
+    return {
+        'status': normalized_status,
+        'label': label,
+        'isActive': normalized_status == 'active',
+        'isCoolingDown': is_cooling,
+        'isClosed': is_closed,
+        'cooldownUntil': cooldown_until.isoformat() if cooldown_until else None,
+        'closedAt': closed_at.isoformat() if closed_at else None,
+        'governanceNote': str(governance_note or '').strip() or None,
+        'reason': reason,
+    }
+
+
 def _build_unlock_system_message(stage: int) -> dict[str, Any]:
     milestone = _build_unlock_milestones(stage, message_count=THREAD_UNLOCK_REQUIREMENTS.get(stage, 0))
     milestone_label = next((item['label'] for item in milestone if item['stage'] == stage), f'阶段 {stage}')
     return {
-        'id': f'sys_unlock_{stage}_{int(datetime.utcnow().timestamp() * 1000)}',
+        'id': f'sys_unlock_{stage}_{int(_utcnow_naive().timestamp() * 1000)}',
         'senderId': 'system',
         'content': f'🔓 {milestone_label} 已解锁 — 可进入更深一层的关系试探',
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': _utcnow_naive().isoformat(),
         'isSystemMessage': True,
     }
 
@@ -384,10 +441,10 @@ def _sanitize_thread_messages(
             continue
         sanitized.append(
             {
-                'id': str(item.get('id') or f'msg_{sender_id}_{int(datetime.utcnow().timestamp() * 1000)}'),
+                'id': str(item.get('id') or f'msg_{sender_id}_{int(_utcnow_naive().timestamp() * 1000)}'),
                 'senderId': sender_id,
                 'content': content,
-                'timestamp': str(item.get('timestamp') or datetime.utcnow().isoformat()),
+                'timestamp': str(item.get('timestamp') or _utcnow_naive().isoformat()),
             }
         )
     return existing + sanitized, sanitized
@@ -435,7 +492,7 @@ def upsert_strategy_asset(
 ) -> StrategyAsset:
     query = select(StrategyAsset).where(StrategyAsset.asset_key == asset_key, StrategyAsset.version == version)
     entity = db.scalars(query).first()
-    now = datetime.utcnow()
+    now = _utcnow_naive()
     if is_active:
         active_items = db.scalars(select(StrategyAsset).where(StrategyAsset.asset_key == asset_key, StrategyAsset.is_active.is_(True))).all()
         for item in active_items:
@@ -467,6 +524,111 @@ def upsert_strategy_asset(
     return entity
 
 
+AD_REWARD_TASK_CATALOG: list[dict[str, Any]] = [
+    {
+        'taskKey': 'watch_ad_video',
+        'title': '观看激励视频',
+        'description': '完成一次激励视频观看后领取 Token。',
+    },
+    {
+        'taskKey': 'complete_survey',
+        'title': '完成简短问卷',
+        'description': '完成一份平台问卷后领取 Token。',
+    },
+    {
+        'taskKey': 'daily_checkin',
+        'title': '每日签到',
+        'description': '完成每日签到后领取 Token。',
+    },
+]
+
+
+def list_ad_reward_claims(db: Session, *, user_id: str | None = None) -> list[AdRewardClaim]:
+    query = select(AdRewardClaim).order_by(AdRewardClaim.claimed_at.desc())
+    if user_id:
+        query = query.where(AdRewardClaim.user_id == user_id)
+    return list(db.scalars(query).all())
+
+
+def serialize_ad_reward_claim(entity: AdRewardClaim) -> dict[str, Any]:
+    return {
+        'id': entity.id,
+        'userId': entity.user_id,
+        'taskKey': entity.task_key,
+        'rewardTokens': int(entity.reward_tokens or 0),
+        'status': entity.status,
+        'payload': entity.payload or {},
+        'createdAt': entity.created_at.isoformat() if entity.created_at else None,
+        'claimedAt': entity.claimed_at.isoformat() if entity.claimed_at else None,
+    }
+
+
+def build_ad_reward_task_catalog(
+    *,
+    claims: list[AdRewardClaim],
+    daily_limit: int,
+    reward_tokens: int,
+) -> list[dict[str, Any]]:
+    normalized_limit = max(1, int(daily_limit or 1))
+    remaining = max(0, normalized_limit - len(claims))
+    claimed_keys = {str(item.task_key) for item in claims}
+    items: list[dict[str, Any]] = []
+    for task in AD_REWARD_TASK_CATALOG:
+        already_claimed = task['taskKey'] in claimed_keys
+        items.append(
+            {
+                **task,
+                'rewardTokens': int(reward_tokens or 0),
+                'alreadyClaimed': already_claimed,
+                'claimable': (not already_claimed) and remaining > 0,
+                'remainingDailyClaims': remaining,
+            }
+        )
+    return items
+
+
+def create_ad_reward_claim(
+    db: Session,
+    *,
+    user_id: str,
+    task_key: str,
+    reward_tokens: int,
+    daily_limit: int,
+) -> tuple[AdRewardClaim, UserProfile]:
+    normalized_task_key = str(task_key or '').strip()
+    if normalized_task_key not in {item['taskKey'] for item in AD_REWARD_TASK_CATALOG}:
+        raise ValueError('Unknown ad reward task')
+
+    current_claims = list_ad_reward_claims(db, user_id=user_id)
+    if len(current_claims) >= max(1, int(daily_limit or 1)):
+        raise ValueError('Ad reward daily limit reached')
+    if any(str(item.task_key) == normalized_task_key for item in current_claims):
+        raise ValueError('Ad reward task already claimed today')
+
+    now = _utcnow_naive()
+    claim = AdRewardClaim(
+        id=f'adreward_{user_id}_{normalized_task_key}_{int(now.timestamp())}',
+        user_id=user_id,
+        task_key=normalized_task_key,
+        reward_tokens=int(reward_tokens or 0),
+        status='claimed',
+        payload={'grantSource': 'ad-reward', 'grantedAt': now.isoformat()},
+        created_at=now,
+        claimed_at=now,
+    )
+    db.add(claim)
+
+    profile = get_or_create_user_profile(db, user_id)
+    profile.token_balance = float(profile.token_balance or 0) + float(reward_tokens or 0)
+    if str(profile.tier or '').strip().lower() == 'free':
+        profile.tier = 'Ad-Reward'
+    profile.updated_at = now
+    db.commit()
+    db.refresh(claim)
+    db.refresh(profile)
+    return claim, profile
+
+
 def list_strategy_assets(db: Session, asset_key: str | None = None) -> list[StrategyAsset]:
     query = select(StrategyAsset)
     if asset_key:
@@ -484,18 +646,24 @@ def get_active_strategy_asset(db: Session, asset_key: str) -> StrategyAsset | No
     return db.scalars(query).first()
 
 
-def activate_strategy_asset(db: Session, asset_key: str, version: str) -> StrategyAsset | None:
+def activate_strategy_asset(db: Session, asset_key: str, version: str, *, reason: str = 'admin-console-manual-switch', operator: str | None = None) -> StrategyAsset | None:
     entity = db.scalars(select(StrategyAsset).where(StrategyAsset.asset_key == asset_key, StrategyAsset.version == version)).first()
     if entity is None:
         return None
 
-    now = datetime.utcnow()
+    now = _utcnow_naive()
     active_items = db.scalars(select(StrategyAsset).where(StrategyAsset.asset_key == asset_key, StrategyAsset.is_active.is_(True))).all()
+    previous_version = ''
     for item in active_items:
+        previous_version = previous_version or str(item.version or '')
         item.is_active = False
         item.updated_at = now
 
     entity.is_active = True
+    entity.activated_from_version = previous_version
+    entity.rollback_note = str(reason or 'admin-console-manual-switch')
+    entity.rollback_operator = str(operator or '').strip()
+    entity.rollback_at = now
     entity.updated_at = now
     db.commit()
     db.refresh(entity)
@@ -549,9 +717,32 @@ def update_user_profile(db: Session, profile_id: str, data: dict[str, Any]) -> U
         elif attr == 'token_balance':
             setattr(entity, attr, float(value))
         elif attr == 'updated_at':
-            setattr(entity, attr, datetime.utcnow())
+            setattr(entity, attr, _utcnow_naive())
         else:
             setattr(entity, attr, value)
+    db.commit()
+    db.refresh(entity)
+    return entity
+
+
+def serialize_privacy_consent(entity: UserProfile) -> dict[str, Any]:
+    accepted_at_value = getattr(entity, 'privacy_consent_accepted_at', None)
+    accepted_at = accepted_at_value.isoformat() if accepted_at_value else None
+    return {
+        'accepted': bool(accepted_at_value),
+        'acceptedAt': accepted_at,
+        'version': getattr(entity, 'privacy_consent_version', None),
+        'scope': getattr(entity, 'privacy_consent_scope', None),
+    }
+
+
+def accept_privacy_consent(db: Session, user_id: str, *, version: str, scope: str) -> UserProfile:
+    entity = get_or_create_user_profile(db, user_id)
+    now = _utcnow_naive()
+    entity.privacy_consent_version = str(version or 'lab-v1')
+    entity.privacy_consent_scope = str(scope or 'lab-interview')
+    entity.privacy_consent_accepted_at = entity.privacy_consent_accepted_at or now
+    entity.updated_at = now
     db.commit()
     db.refresh(entity)
     return entity
@@ -564,7 +755,7 @@ def consume_user_tokens(db: Session, user_id: str, amount: float) -> tuple[bool,
         return False, profile, current_balance
 
     profile.token_balance = current_balance - amount
-    profile.updated_at = datetime.utcnow()
+    profile.updated_at = _utcnow_naive()
     db.commit()
     db.refresh(profile)
     return True, profile, float(profile.token_balance or 0)
@@ -573,7 +764,7 @@ def consume_user_tokens(db: Session, user_id: str, amount: float) -> tuple[bool,
 def set_user_token_balance(db: Session, user_id: str, amount: float) -> UserProfile:
     profile = get_or_create_user_profile(db, user_id)
     profile.token_balance = float(amount)
-    profile.updated_at = datetime.utcnow()
+    profile.updated_at = _utcnow_naive()
     db.commit()
     db.refresh(profile)
     return profile
@@ -581,7 +772,7 @@ def set_user_token_balance(db: Session, user_id: str, amount: float) -> UserProf
 
 def save_session_state(db: Session, session_id: str, user_id: str, status: str, current_stage: str, turn_count: int, max_turns: int, payload: dict[str, Any]) -> SessionState:
     entity = db.get(SessionState, session_id)
-    now = datetime.utcnow()
+    now = _utcnow_naive()
     if entity is None:
         entity = SessionState(
             id=session_id,
@@ -649,7 +840,7 @@ def save_report(db: Session, report: dict[str, Any]) -> InsightReport:
         v_embedding=report.get('vEmbedding') or None,
         consistency_score=float(report.get('consistencyScore', 0)),
         is_public=bool(report.get('isPublic', False)),
-        created_at=datetime.utcnow(),
+        created_at=_utcnow_naive(),
     )
     db.merge(entity)
     db.commit()
@@ -667,10 +858,80 @@ def list_reports(db: Session, user_id: str | None = None, public_only: bool = Fa
     return list(db.scalars(query).all())
 
 
+def _normalize_vector_search_engine(value: str | None) -> str:
+    engine = str(value or 'pgvector').strip().lower()
+    if engine in {'memory', 'in-memory', 'python'}:
+        return 'memory'
+    if engine in {'hybrid', 'mixed'}:
+        return 'hybrid'
+    return 'pgvector'
+
+
+def _cosine_similarity(source: list[float], target: list[float]) -> float:
+    size = min(len(source), len(target))
+    if size <= 0:
+        return 0.0
+    dot = sum(float(source[index] or 0) * float(target[index] or 0) for index in range(size))
+    source_norm = sqrt(sum(float(source[index] or 0) ** 2 for index in range(size)))
+    target_norm = sqrt(sum(float(target[index] or 0) ** 2 for index in range(size)))
+    if source_norm == 0 or target_norm == 0:
+        return 0.0
+    return dot / (source_norm * target_norm)
+
+
+def _filter_similarity_candidates(
+    reports: list[InsightReport],
+    *,
+    exclude_user_id: str | None,
+    exclude_report_ids: list[str] | None,
+    public_only: bool,
+    min_consistency: float | None,
+) -> list[InsightReport]:
+    excluded_report_ids = set(exclude_report_ids or [])
+    items: list[InsightReport] = []
+    for item in reports:
+        if public_only and not bool(item.is_public):
+            continue
+        if exclude_user_id and item.user_id == exclude_user_id:
+            continue
+        if excluded_report_ids and item.id in excluded_report_ids:
+            continue
+        if min_consistency is not None and float(item.consistency_score or 0) < float(min_consistency):
+            continue
+        items.append(item)
+    return items
+
+
+def _list_similar_reports_memory(
+    db: Session,
+    *,
+    source_embedding: list[float],
+    exclude_user_id: str | None,
+    exclude_report_ids: list[str] | None,
+    public_only: bool,
+    min_consistency: float | None,
+    limit: int,
+) -> list[InsightReport]:
+    candidates = _filter_similarity_candidates(
+        list_reports(db, public_only=public_only),
+        exclude_user_id=exclude_user_id,
+        exclude_report_ids=exclude_report_ids,
+        public_only=public_only,
+        min_consistency=min_consistency,
+    )
+    ranked = sorted(
+        [item for item in candidates if item.v_embedding],
+        key=lambda item: _cosine_similarity(source_embedding, [float(value or 0) for value in (item.v_embedding or [])]),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
 def list_similar_reports(
     db: Session,
     *,
     source_embedding: list[float] | None,
+    vector_search_engine: str = 'pgvector',
     exclude_user_id: str | None = None,
     exclude_report_ids: list[str] | None = None,
     public_only: bool = True,
@@ -681,6 +942,19 @@ def list_similar_reports(
     if not normalized_embedding:
         return []
 
+    normalized_engine = _normalize_vector_search_engine(vector_search_engine)
+
+    if normalized_engine == 'memory':
+        return _list_similar_reports_memory(
+            db,
+            source_embedding=normalized_embedding,
+            exclude_user_id=exclude_user_id,
+            exclude_report_ids=exclude_report_ids,
+            public_only=public_only,
+            min_consistency=min_consistency,
+            limit=limit,
+        )
+
     query = select(InsightReport).where(InsightReport.v_embedding.is_not(None))
     if public_only:
         query = query.where(InsightReport.is_public.is_(True))
@@ -690,9 +964,42 @@ def list_similar_reports(
         query = query.where(InsightReport.id.not_in(exclude_report_ids))
     if min_consistency is not None:
         query = query.where(InsightReport.consistency_score >= min_consistency)
+    try:
+        query = query.order_by(InsightReport.v_embedding.cosine_distance(normalized_embedding)).limit(limit)
+        pgvector_items = list(db.scalars(query).all())
+    except Exception:
+        if normalized_engine == 'pgvector':
+            return _list_similar_reports_memory(
+                db,
+                source_embedding=normalized_embedding,
+                exclude_user_id=exclude_user_id,
+                exclude_report_ids=exclude_report_ids,
+                public_only=public_only,
+                min_consistency=min_consistency,
+                limit=limit,
+            )
+        pgvector_items = []
 
-    query = query.order_by(InsightReport.v_embedding.cosine_distance(normalized_embedding)).limit(limit)
-    return list(db.scalars(query).all())
+    if normalized_engine == 'hybrid':
+        memory_items = _list_similar_reports_memory(
+            db,
+            source_embedding=normalized_embedding,
+            exclude_user_id=exclude_user_id,
+            exclude_report_ids=exclude_report_ids,
+            public_only=public_only,
+            min_consistency=min_consistency,
+            limit=limit * 2,
+        )
+        merged: list[InsightReport] = []
+        seen_ids: set[str] = set()
+        for item in [*pgvector_items, *memory_items]:
+            if item.id in seen_ids:
+                continue
+            seen_ids.add(item.id)
+            merged.append(item)
+        return merged[:limit]
+
+    return pgvector_items
 
 
 def get_daily_exposure_counts(
@@ -706,7 +1013,7 @@ def get_daily_exposure_counts(
     if not user_ids:
         return {}
 
-    target_date = date or datetime.utcnow().date().isoformat()
+    target_date = date or _utcnow_naive().date().isoformat()
     query = (
         select(ExposureLog.user_id, func.count(ExposureLog.id))
         .where(ExposureLog.user_id.in_(user_ids))
@@ -747,6 +1054,108 @@ def list_social_threads(db: Session, user_id: str) -> list[SocialThread]:
         .order_by(SocialThread.updated_at.desc())
     )
     return list(db.scalars(query).all())
+
+
+def count_active_social_threads(db: Session, user_id: str) -> int:
+    query = select(func.count(SocialThread.id)).where(
+        ((SocialThread.user_id_a == user_id) | (SocialThread.user_id_b == user_id))
+        & (SocialThread.status.in_(tuple(THREAD_ACTIVE_STATUSES)))
+    )
+    return int(db.scalar(query) or 0)
+
+
+def count_cooling_social_threads(db: Session, user_id: str) -> int:
+    query = select(func.count(SocialThread.id)).where(
+        ((SocialThread.user_id_a == user_id) | (SocialThread.user_id_b == user_id))
+        & (SocialThread.status.in_(tuple(THREAD_COOLDOWN_STATUSES)))
+    )
+    return int(db.scalar(query) or 0)
+
+
+def build_social_bandwidth_snapshot(
+    db: Session,
+    *,
+    user_id: str,
+    matching_enabled: bool,
+    active_thread_limit: int,
+) -> dict[str, Any]:
+    normalized_limit = max(1, int(active_thread_limit or 1))
+    active_thread_count = count_active_social_threads(db, user_id)
+    cooling_thread_count = count_cooling_social_threads(db, user_id)
+    saturated = active_thread_count >= normalized_limit
+    discoverable = bool(matching_enabled) and not saturated
+    return {
+        'activeThreadCount': active_thread_count,
+        'coolingThreadCount': cooling_thread_count,
+        'activeThreadLimit': normalized_limit,
+        'remainingSlots': max(0, normalized_limit - active_thread_count),
+        'saturated': saturated,
+        'discoverable': discoverable,
+        'status': 'hidden_due_to_bandwidth' if bool(matching_enabled) and saturated else ('disabled' if not bool(matching_enabled) else 'available'),
+    }
+
+
+def build_social_bandwidth_snapshots(
+    db: Session,
+    *,
+    user_ids: list[str],
+    matching_enabled_by_user: dict[str, bool],
+    active_thread_limit: int,
+) -> dict[str, dict[str, Any]]:
+    unique_user_ids = [item for item in dict.fromkeys(user_ids) if str(item).strip()]
+    if not unique_user_ids:
+        return {}
+
+    normalized_limit = max(1, int(active_thread_limit or 1))
+    query = (
+        select(SocialThread.user_id_a, SocialThread.user_id_b, func.count(SocialThread.id))
+        .where((SocialThread.user_id_a.in_(unique_user_ids)) | (SocialThread.user_id_b.in_(unique_user_ids)))
+        .group_by(SocialThread.user_id_a, SocialThread.user_id_b)
+    )
+    rows = db.execute(query).all()
+    counts = {user_id: 0 for user_id in unique_user_ids}
+    cooling_counts = {user_id: 0 for user_id in unique_user_ids}
+    for user_id_a, user_id_b, count in rows:
+        current_count = int(count or 0)
+        if user_id_a in counts:
+            counts[str(user_id_a)] += current_count
+        if user_id_b in counts and user_id_b != user_id_a:
+            counts[str(user_id_b)] += current_count
+
+    cooldown_rows = db.execute(
+        select(SocialThread.user_id_a, SocialThread.user_id_b, func.count(SocialThread.id))
+        .where(((SocialThread.user_id_a.in_(unique_user_ids)) | (SocialThread.user_id_b.in_(unique_user_ids))) & (SocialThread.status.in_(tuple(THREAD_COOLDOWN_STATUSES))))
+        .group_by(SocialThread.user_id_a, SocialThread.user_id_b)
+    ).all()
+    for user_id_a, user_id_b, count in cooldown_rows:
+        current_count = int(count or 0)
+        if user_id_a in cooling_counts:
+            cooling_counts[str(user_id_a)] += current_count
+        if user_id_b in cooling_counts and user_id_b != user_id_a:
+            cooling_counts[str(user_id_b)] += current_count
+
+    snapshots: dict[str, dict[str, Any]] = {}
+    for user_id in unique_user_ids:
+        matching_enabled = bool(matching_enabled_by_user.get(user_id, True))
+        active_thread_count = int(counts.get(user_id, 0))
+        saturated = active_thread_count >= normalized_limit
+        snapshots[user_id] = {
+            'activeThreadCount': active_thread_count,
+            'coolingThreadCount': int(cooling_counts.get(user_id, 0)),
+            'activeThreadLimit': normalized_limit,
+            'remainingSlots': max(0, normalized_limit - active_thread_count),
+            'saturated': saturated,
+            'discoverable': matching_enabled and not saturated,
+            'status': 'hidden_due_to_bandwidth' if matching_enabled and saturated else ('disabled' if not matching_enabled else 'available'),
+        }
+    return snapshots
+
+
+def assert_social_discoverable(bandwidth_snapshot: dict[str, Any], *, matching_enabled: bool) -> None:
+    if not bool(matching_enabled):
+        raise ValueError('Matching disabled for current profile')
+    if bool((bandwidth_snapshot or {}).get('saturated')):
+        raise ValueError('Social bandwidth exhausted; close or cool down existing threads before discover')
 
 
 def list_match_records(db: Session, user_id: str | None = None) -> list[MatchRecord]:
@@ -831,7 +1240,7 @@ def build_admin_stats(db: Session) -> dict[str, int]:
     sessions = list_all_session_states(db)
     reports = list_reports(db)
     matches = list_match_records(db)
-    today = datetime.utcnow().date().isoformat()
+    today = _utcnow_naive().date().isoformat()
     exposures = list_exposure_logs(db, date=today)
     return {
         'users': len(profiles),
@@ -854,11 +1263,25 @@ def save_social_thread(
     tension_report: dict[str, Any],
     unlock_milestones: list[dict[str, Any]],
     messages: list[dict[str, Any]],
+    status: str = 'active',
+    cooldown_until: str | datetime | None = None,
+    governance_note: str | None = None,
 ) -> SocialThread:
     entity = db.get(SocialThread, thread_id)
-    now = datetime.utcnow()
+    now = _utcnow_naive()
+    normalized_cooldown_until = _parse_optional_datetime(cooldown_until)
+    normalized_status = _normalize_thread_status(status, normalized_cooldown_until)
+    closed_at = now if normalized_status == 'closed' else None
+    if entity is not None and entity.closed_at and normalized_status == 'closed':
+        closed_at = entity.closed_at
+    if normalized_status != 'cooldown':
+        normalized_cooldown_until = None
+    if entity is not None and entity.status == 'closed' and normalized_status != 'closed':
+        raise ValueError('Closed thread cannot be reopened')
     participant_ids = {user_id_a, user_id_b} - {''}
     existing_messages = list(entity.messages or []) if entity is not None else []
+    if normalized_status in {'cooldown', 'closed'} and len(messages or []) > len(existing_messages):
+        raise ValueError('Cooling or closed thread cannot receive new messages')
     normalized_messages, appended_messages = _sanitize_thread_messages(
         messages,
         participant_ids=participant_ids,
@@ -895,6 +1318,10 @@ def save_social_thread(
             tension_report=tension_report,
             unlock_milestones=normalized_milestones,
             messages=normalized_messages,
+            status=normalized_status,
+            cooldown_until=normalized_cooldown_until,
+            closed_at=closed_at,
+            governance_note=str(governance_note or '').strip(),
             created_at=now,
             updated_at=now,
         )
@@ -908,6 +1335,10 @@ def save_social_thread(
         entity.tension_report = tension_report
         entity.unlock_milestones = normalized_milestones
         entity.messages = normalized_messages
+        entity.status = normalized_status
+        entity.cooldown_until = normalized_cooldown_until
+        entity.closed_at = closed_at
+        entity.governance_note = str(governance_note or entity.governance_note or '').strip()
         entity.updated_at = now
     db.commit()
     db.refresh(entity)
@@ -997,6 +1428,12 @@ def serialize_social_thread(entity: SocialThread) -> dict[str, Any]:
         source=entity.unlock_milestones or [],
     )
     tension_report = entity.tension_report or {}
+    governance_state = _build_thread_governance_state(
+        status=getattr(entity, 'status', 'active'),
+        cooldown_until=getattr(entity, 'cooldown_until', None),
+        closed_at=getattr(entity, 'closed_at', None),
+        governance_note=getattr(entity, 'governance_note', ''),
+    )
     return {
         'id': entity.id,
         'userIdA': entity.user_id_a,
@@ -1015,6 +1452,11 @@ def serialize_social_thread(entity: SocialThread) -> dict[str, Any]:
             message_count=message_count,
             tension_report=tension_report,
         ),
+        'status': governance_state['status'],
+        'cooldownUntil': governance_state['cooldownUntil'],
+        'closedAt': governance_state['closedAt'],
+        'governanceNote': governance_state['governanceNote'],
+        'governanceState': governance_state,
         'createdAt': entity.created_at.isoformat() if entity.created_at else None,
         'updatedAt': entity.updated_at.isoformat() if entity.updated_at else None,
     }
@@ -1043,6 +1485,10 @@ def serialize_strategy_asset(entity: StrategyAsset) -> dict[str, Any]:
         'content': entity.content,
         'sourcePath': entity.source_path,
         'isActive': entity.is_active,
+        'activatedFromVersion': getattr(entity, 'activated_from_version', '') or None,
+        'rollbackNote': getattr(entity, 'rollback_note', '') or None,
+        'rollbackOperator': getattr(entity, 'rollback_operator', '') or None,
+        'rollbackAt': entity.rollback_at.isoformat() if getattr(entity, 'rollback_at', None) else None,
         'createdAt': entity.created_at.isoformat() if entity.created_at else None,
         'updatedAt': entity.updated_at.isoformat() if entity.updated_at else None,
     }
@@ -1052,7 +1498,7 @@ def serialize_configs(entities: Iterable[SystemConfig]) -> list[dict[str, Any]]:
     return [{'key': item.key, 'value': item.value, 'type': item.type, 'updatedAt': None} for item in entities]
 
 
-def serialize_profile(entity: UserProfile) -> dict[str, Any]:
+def serialize_profile(entity: UserProfile, bandwidth_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         'id': entity.id,
         'userId': entity.user_id,
@@ -1061,6 +1507,8 @@ def serialize_profile(entity: UserProfile) -> dict[str, Any]:
         'tokenBalance': float(entity.token_balance or 0),
         'notificationChannels': entity.notification_channels or {},
         'matchingEnabled': bool(entity.matching_enabled),
+        'socialBandwidth': bandwidth_snapshot or {},
+        'privacyConsent': serialize_privacy_consent(entity),
         'isAdmin': bool(entity.is_admin),
         'createdAt': entity.created_at.isoformat() if entity.created_at else None,
         'updatedAt': entity.updated_at.isoformat() if entity.updated_at else None,

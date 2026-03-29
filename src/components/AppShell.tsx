@@ -9,11 +9,11 @@ import {
   LogOut,
   Coins,
 } from 'lucide-react'
-import { useAuth } from '../../hooks/useAuth'
-import { useUserProfile } from '../../hooks/useUserProfile'
-import { authApi } from '../../lib/localApi'
+import { useAuth } from '../hooks/useAuth'
+import { useUserProfile } from '../hooks/useUserProfile'
+import { authApi } from '../lib/localApi'
 import { useEffect, useState } from 'react'
-import { fetchReports, fetchRuntimeConfigs, fetchThreads } from '../../lib/ariadneApi'
+import { fetchReports, fetchRuntimeConfigs, fetchThreads } from '../lib/ariadneApi'
 
 interface ShellGovernanceState {
   reportCount: number

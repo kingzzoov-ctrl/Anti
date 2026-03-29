@@ -15,5 +15,8 @@ class UserProfile(Base):
     notification_channels: Mapped[dict] = mapped_column(JSON, default=dict)
     matching_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    privacy_consent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    privacy_consent_scope: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    privacy_consent_accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

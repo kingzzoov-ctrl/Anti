@@ -1,6 +1,6 @@
 from __future__ import annotations
 from collections import Counter
-from datetime import datetime
+from datetime import UTC, datetime
 import hashlib
 from typing import Iterable
 from uuid import uuid4
@@ -14,6 +14,10 @@ FEATURE_KEYWORDS = {
     'v5Emotion': ['情绪', '表达', '敏感', '共情', '脆弱', '在意', '喜欢'],
     'v6Values': ['价值观', '责任', '家庭', '婚姻', '成长', '原则', '未来'],
 }
+
+
+def _utcnow_iso_z() -> str:
+    return datetime.now(UTC).isoformat().replace('+00:00', 'Z')
 
 DIMENSION_LABELS = {
     'v1Security': '安全感',
@@ -510,7 +514,7 @@ def build_report(
                 'promptAssetVersion': '2026-03-29.prompt-unified.v1',
                 'reportType': 'detailed',
                 'lineageId': lineage_id,
-                'generatedAt': datetime.utcnow().isoformat() + 'Z',
+                'generatedAt': _utcnow_iso_z(),
                 'language': 'zh-CN',
                 'sourceSessionId': session_id,
                 'turnCount': len(transcript),
@@ -538,5 +542,5 @@ def build_report(
         'consistencyScore': consistency_score,
         'isPublic': False,
         'version': 1,
-        'createdAt': datetime.utcnow().isoformat() + 'Z',
+        'createdAt': _utcnow_iso_z(),
     }

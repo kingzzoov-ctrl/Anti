@@ -5,7 +5,7 @@ import { Send, FlaskConical, Zap, AlertTriangle, X, ChevronRight, Circle, Downlo
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAuth } from '../hooks/useAuth'
 import { useUserProfile } from '../hooks/useUserProfile'
-import { createInterviewTurnStream, createReportJob, fetchSessionById, upsertSession } from '../lib/ariadneApi'
+import { acceptPrivacyConsent, createInterviewTurnStream, createReportJob, fetchSessionById, upsertSession } from '../lib/ariadneApi'
 import { buildTranscriptMarkdown } from '../lib/governanceExport'
 import { getRuntimeApiBaseEnvName, getRuntimeFunctionEnvName, RUNTIME_CONFIG_KEYS } from '../lib/runtimeConfig'
 import type { Message, SessionStage, InterviewSession, Contradiction } from '../types'
@@ -363,6 +363,7 @@ export default function LabPage() {
   const [panelOpen, setPanelOpen] = useState(false)
   const [runtimeWarning, setRuntimeWarning] = useState<string | null>(null)
   const [privacyAccepted, setPrivacyAccepted] = useState(false)
+  const [isSavingPrivacyConsent, setIsSavingPrivacyConsent] = useState(false)
   const [sessionMeta, setSessionMeta] = useState<Pick<InterviewSession, 'stateContext' | 'readiness' | 'offTopicCount' | 'badCaseFlags' | 'completionReason'>>({
     stateContext: undefined,
     readiness: false,
@@ -386,6 +387,39 @@ export default function LabPage() {
       setPrivacyAccepted(false)
     }
   }, [privacyStorageKey])
+
+  useEffect(() => {
+    if (typeof profile?.privacyConsent?.accepted === 'boolean') {
+      setPrivacyAccepted(Boolean(profile.privacyConsent.accepted))
+    }
+  }, [profile?.privacyConsent?.accepted])
+
+  useEffect(() => {
+    if (!user?.id || profile?.privacyConsent?.accepted) return
+    try {
+      if (window.localStorage.getItem(privacyStorageKey) !== 'accepted') return
+    } catch {
+      return
+    }
+
+    let cancelled = false
+    const migrateLocalConsent = async () => {
+      try {
+        const payload = await acceptPrivacyConsent(user.id, { version: 'lab-v1', scope: 'lab-interview' })
+        if (!cancelled && payload?.consent?.accepted) {
+          setPrivacyAccepted(true)
+          await refetchProfile()
+        }
+      } catch {
+        // ignore migration failure, keep local fallback
+      }
+    }
+
+    migrateLocalConsent()
+    return () => {
+      cancelled = true
+    }
+  }, [privacyStorageKey, profile?.privacyConsent?.accepted, refetchProfile, user?.id])
 
   useEffect(() => {
     if (!params.sessionId || !user?.id) return
@@ -643,14 +677,24 @@ export default function LabPage() {
 
   const canGenerateReport = turnCount >= 15 || stage === 'CONVERGE' || stage === 'REPORT_READY' || stage === 'COMPLETE'
 
-  const handleAcceptPrivacy = () => {
+  const handleAcceptPrivacy = async () => {
+    if (!user?.id || isSavingPrivacyConsent) return
+    setIsSavingPrivacyConsent(true)
     setPrivacyAccepted(true)
     try {
       window.localStorage.setItem(privacyStorageKey, 'accepted')
     } catch {
       // ignore
     }
-    toast.success('已确认隐私告知')
+    try {
+      await acceptPrivacyConsent(user.id, { version: 'lab-v1', scope: 'lab-interview' })
+      await refetchProfile()
+      toast.success('已确认隐私告知')
+    } catch {
+      toast.error('隐私告知确认同步失败，已保留本地确认状态')
+    } finally {
+      setIsSavingPrivacyConsent(false)
+    }
   }
 
   const exportTranscript = () => {
@@ -750,8 +794,8 @@ export default function LabPage() {
                 <li>· 继续即表示你同意系统在治理范围内处理本次会话记录</li>
               </ul>
               {!privacyAccepted && (
-                <Button size="sm" variant="outline" className="h-8 text-xs border-primary/40 text-primary hover:bg-primary/10" onClick={handleAcceptPrivacy}>
-                  我已知晓并同意
+                <Button size="sm" variant="outline" className="h-8 text-xs border-primary/40 text-primary hover:bg-primary/10" onClick={handleAcceptPrivacy} disabled={isSavingPrivacyConsent}>
+                  {isSavingPrivacyConsent ? '确认中...' : '我已知晓并同意'}
                 </Button>
               )}
             </div>

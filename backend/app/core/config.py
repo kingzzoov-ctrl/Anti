@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     llm_api_key: str = 'dev-key'
     llm_model_interview: str = 'gpt-4.1-mini'
     llm_model_match: str = 'gpt-4.1'
+    vector_search_engine: str = 'pgvector'
     vector_dimension: int = 1536
     token_cost_interview_turn: int = 1
     token_cost_discover: int = 5
@@ -20,6 +21,15 @@ class Settings(BaseSettings):
     match_decay_factor: float = 0.05
     match_resonance_threshold: float = 0.55
     consistency_min_threshold: float = 0.6
+    report_worker_poll_interval_seconds: float = 2.0
+    notification_worker_poll_interval_seconds: float = 2.0
+    notification_max_retries: int = 3
+    notification_retry_backoff_seconds: float = 30.0
+    ad_reward_daily_limit: int = 3
+    ad_reward_token_reward: int = 15
+    notify_email_endpoint: str = ''
+    notify_telegram_endpoint: str = ''
+    notify_wechat_endpoint: str = ''
 
     model_config = SettingsConfigDict(env_file='.env', env_prefix='ARIADNE_', extra='ignore')
 

@@ -23,9 +23,17 @@ export interface UserProfile {
   tokenBalance: number
   notificationChannels: Record<string, unknown>
   matchingEnabled: boolean
+  privacyConsent?: PrivacyConsent
   isAdmin: boolean
   createdAt: string
   updatedAt: string
+}
+
+export interface PrivacyConsent {
+  accepted: boolean
+  acceptedAt?: string | null
+  version?: string | null
+  scope?: string | null
 }
 
 export interface Contradiction {
@@ -199,6 +207,29 @@ export interface ReportJob {
   completedAt?: string | null
 }
 
+export interface NotificationEvent {
+  id: string
+  userId: string
+  kind: string
+  channel: string
+  status: 'queued' | 'running' | 'delivered' | 'skipped' | 'failed' | string
+  title: string
+  body: string
+  payload: Record<string, unknown>
+  idempotencyKey?: string | null
+  retryCount: number
+  maxRetries: number
+  lastError?: string | null
+  deadLetteredAt?: string | null
+  sourceKind?: string | null
+  sourceId?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+  scheduledAt?: string | null
+  startedAt?: string | null
+  deliveredAt?: string | null
+}
+
 export interface MatchRecord {
   id: string
   userIdA: string
@@ -270,6 +301,18 @@ export interface ThreadStagePolicy {
   guidance: string
 }
 
+export interface ThreadGovernanceState {
+  status: 'active' | 'cooldown' | 'closed' | string
+  label: string
+  isActive: boolean
+  isCoolingDown: boolean
+  isClosed: boolean
+  cooldownUntil?: string | null
+  closedAt?: string | null
+  governanceNote?: string | null
+  reason: string
+}
+
 export interface MatchAnalysisPayload {
   resonanceScore: number
   resonancePoints: string[]
@@ -316,6 +359,11 @@ export interface SocialThread {
   stagePolicy?: ThreadStagePolicy
   tensionHandbook?: ThreadTensionHandbook
   contactExchangeStatus?: ThreadContactExchangeStatus
+  status?: 'active' | 'cooldown' | 'closed' | string
+  cooldownUntil?: string | null
+  closedAt?: string | null
+  governanceNote?: string | null
+  governanceState?: ThreadGovernanceState
   createdAt: string
   updatedAt: string
 }
@@ -346,6 +394,10 @@ export interface StrategyAsset {
   content: string
   sourcePath: string
   isActive: boolean
+  activatedFromVersion?: string | null
+  rollbackNote?: string | null
+  rollbackOperator?: string | null
+  rollbackAt?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }

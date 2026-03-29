@@ -66,6 +66,8 @@ class TogglePublicRequest(AriadneBaseModel):
 
 class StrategyAssetActivateRequest(AriadneBaseModel):
     version: str
+    reason: str = 'admin-console-manual-switch'
+    operator: str | None = None
 
 
 class SocialThreadUpsertRequest(AriadneBaseModel):
@@ -77,6 +79,9 @@ class SocialThreadUpsertRequest(AriadneBaseModel):
     tension_report: dict[str, Any] = Field(default_factory=dict, alias='tensionReport')
     unlock_milestones: list[dict[str, Any]] = Field(default_factory=list, alias='unlockMilestones')
     messages: list[dict[str, Any]] = Field(default_factory=list)
+    status: str = 'active'
+    cooldown_until: str | None = Field(default=None, alias='cooldownUntil')
+    governance_note: str | None = Field(default=None, alias='governanceNote')
 
 
 class SystemConfigUpdateRequest(AriadneBaseModel):
@@ -109,6 +114,24 @@ class IcebreakerRequest(AriadneBaseModel):
     user_id: str | None = Field(default=None, alias='userId')
     thread_id: str = Field(alias='threadId')
     match_id: str = Field(alias='matchId')
+
+
+class NotificationReplayRequest(AriadneBaseModel):
+    action: Literal['notification_replay'] = 'notification_replay'
+    scheduled_at: str | None = Field(default=None, alias='scheduledAt')
+
+
+class AdRewardClaimRequest(AriadneBaseModel):
+    action: Literal['ad_reward_claim'] = 'ad_reward_claim'
+    user_id: str = Field(alias='userId')
+    task_key: str | None = Field(default=None, alias='taskKey')
+
+
+class PrivacyConsentAcceptRequest(AriadneBaseModel):
+    action: Literal['privacy_consent_accept'] = 'privacy_consent_accept'
+    user_id: str = Field(alias='userId')
+    version: str = Field(default='lab-v1')
+    scope: str = Field(default='lab-interview')
 
 
 class GenericResponse(AriadneBaseModel):

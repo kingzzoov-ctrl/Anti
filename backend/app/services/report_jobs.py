@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
+
 from app.models.report_job import ReportJob
 from app.services.interview_engine import build_report
-from app.services.notification_service import append_notifications, build_notification_events
+from app.services.notification_service import append_notifications, build_notification_events, enqueue_notification_events, resolve_notification_channels, serialize_notification_event
 from app.services.storage_service import get_or_create_user_profile, get_session_state, save_report, serialize_report
 
 
@@ -14,7 +16,7 @@ REPORT_JOB_STATUS = ('queued', 'running', 'completed', 'failed')
 
 
 def create_report_job(db: Any, *, user_id: str, session_id: str, trigger_payload: dict[str, Any] | None = None) -> ReportJob:
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     job = ReportJob(
         id=f'report_job_{uuid4().hex[:12]}',
         user_id=user_id,
@@ -47,8 +49,55 @@ def list_report_jobs(db: Any, *, user_id: str | None = None) -> list[ReportJob]:
     return list(query.all())
 
 
+def claim_next_report_job(db: Any) -> ReportJob | None:
+    statement = (
+        select(ReportJob)
+        .where(ReportJob.status == 'queued')
+        .order_by(ReportJob.created_at.asc())
+        .with_for_update(skip_locked=True)
+    )
+    job = db.execute(statement).scalars().first()
+    if job is None:
+        return None
+    _update_job(job, status='running', progress=max(int(job.progress or 0), 5), timeline_label='后台 worker 已认领任务')
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def run_report_job_worker_loop(
+    session_factory: Any,
+    *,
+    stop_when_idle: bool = False,
+    max_jobs: int | None = None,
+    poll_interval_seconds: float = 2.0,
+) -> int:
+    processed = 0
+    while True:
+        job = None
+        db = session_factory()
+        try:
+            job = claim_next_report_job(db)
+            if job is None:
+                if stop_when_idle:
+                    return processed
+            else:
+                process_report_job(db, job.id)
+                processed += 1
+                if max_jobs is not None and processed >= max_jobs:
+                    return processed
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+        if stop_when_idle and job is None:
+            return processed
+        from time import sleep
+        sleep(poll_interval_seconds)
+
+
 def _update_job(job: ReportJob, *, status: str | None = None, progress: int | None = None, error_message: str | None = None, report_id: str | None = None, timeline_label: str | None = None) -> None:
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     if status is not None:
         job.status = status
     if progress is not None:
@@ -103,20 +152,25 @@ def process_report_job(db: Any, job_id: str) -> ReportJob:
             kind='report_ready',
             title='洞见报告已生成',
             body='你的 Ariadne 洞见报告已准备完成，可立即查看。',
-            channels=profile.notification_channels,
+            channels=resolve_notification_channels('report_ready', profile),
         )
-        profile_payload = append_notifications({'notifications': profile.notification_channels.get('inbox', [])}, events)
+        queued_events = enqueue_notification_events(db, events, source_kind='report_job', source_id=job.id)
+        queued_event_payloads = [serialize_notification_event(item) for item in queued_events]
+        inbox_events = [item for item in queued_event_payloads if item.get('channel') == 'inbox']
+        profile_payload = append_notifications({'notifications': profile.notification_channels.get('inbox', [])}, inbox_events)
         profile.notification_channels = {
             **(profile.notification_channels or {}),
             'inbox': profile_payload.get('notifications', []),
+            'deliveryLog': queued_event_payloads[-20:],
         }
         session_payload = dict(session.payload or {})
         session_payload['reportJobId'] = job.id
         session_payload['latestReportId'] = entity.id
-        session_payload = append_notifications(session_payload, events)
+        session_payload = append_notifications(session_payload, inbox_events)
+        session_payload['notificationDispatch'] = queued_event_payloads[-20:]
         session.payload = session_payload
         session.status = 'COMPLETED'
-        session.updated_at = datetime.utcnow()
+        session.updated_at = datetime.now(UTC)
         _update_job(job, status='completed', progress=100, report_id=entity.id, timeline_label='报告落库完成，任务结束')
         db.commit()
         db.refresh(job)

@@ -29,6 +29,11 @@ RUNTIME_CONFIG_SPECS: dict[str, dict[str, Any]] = {
         'type': 'int',
         'description': '报告向量与召回向量维度。',
     },
+    'VECTOR_SEARCH_ENGINE': {
+        'default': settings.vector_search_engine,
+        'type': 'string',
+        'description': '向量召回引擎选择：`pgvector` / `memory` / `hybrid`。',
+    },
     'TOKEN_COST_INTERVIEW_TURN': {
         'default': settings.token_cost_interview_turn,
         'type': 'int',
@@ -63,6 +68,61 @@ RUNTIME_CONFIG_SPECS: dict[str, dict[str, Any]] = {
         'default': settings.consistency_min_threshold,
         'type': 'float',
         'description': '进入召回池的最低自洽度阈值。',
+    },
+    'REPORT_WORKER_POLL_INTERVAL_SECONDS': {
+        'default': settings.report_worker_poll_interval_seconds,
+        'type': 'float',
+        'description': '报告 worker 轮询队列的时间间隔。',
+    },
+    'NOTIFICATION_WORKER_POLL_INTERVAL_SECONDS': {
+        'default': settings.notification_worker_poll_interval_seconds,
+        'type': 'float',
+        'description': '通知 worker 轮询队列的时间间隔。',
+    },
+    'NOTIFICATION_MAX_RETRIES': {
+        'default': settings.notification_max_retries,
+        'type': 'int',
+        'description': '通知事件最大重试次数。',
+    },
+    'NOTIFICATION_RETRY_BACKOFF_SECONDS': {
+        'default': settings.notification_retry_backoff_seconds,
+        'type': 'float',
+        'description': '通知失败后再次入队的退避秒数。',
+    },
+    'WEEKLY_DIGEST_LOOKBACK_DAYS': {
+        'default': 7,
+        'type': 'int',
+        'description': 'Free 周报摘要回看窗口天数。',
+    },
+    'AD_REWARD_DAILY_LIMIT': {
+        'default': settings.ad_reward_daily_limit,
+        'type': 'int',
+        'description': 'Ad-Reward 用户每天可领取激励任务的上限。',
+    },
+    'AD_REWARD_TOKEN_REWARD': {
+        'default': settings.ad_reward_token_reward,
+        'type': 'int',
+        'description': '单次 Ad-Reward 任务成功后授予的 Token 数量。',
+    },
+    'SOCIAL_ACTIVE_THREAD_LIMIT': {
+        'default': 3,
+        'type': 'int',
+        'description': '单用户同时占用的深度社交通道上限；达到上限后将暂时退出 discover 匹配池。',
+    },
+    'NOTIFY_EMAIL_ENDPOINT': {
+        'default': settings.notify_email_endpoint,
+        'type': 'string',
+        'description': '邮件通知发送器 webhook 端点。',
+    },
+    'NOTIFY_TELEGRAM_ENDPOINT': {
+        'default': settings.notify_telegram_endpoint,
+        'type': 'string',
+        'description': 'Telegram 通知发送器 webhook 端点。',
+    },
+    'NOTIFY_WECHAT_ENDPOINT': {
+        'default': settings.notify_wechat_endpoint,
+        'type': 'string',
+        'description': '企业微信/微信通知发送器 webhook 端点。',
     },
 }
 

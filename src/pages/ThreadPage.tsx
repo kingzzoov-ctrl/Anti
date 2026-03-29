@@ -98,6 +98,7 @@ export default function ThreadPage() {
             const remainingToNext = thread.unlockState?.remainingMessageCount ?? 0
             const contactStatus = thread.contactExchangeStatus
             const blocker = contactStatus?.blockers?.[0]
+            const governance = thread.governanceState
 
             let timeAgo = ''
             try {
@@ -141,6 +142,8 @@ export default function ThreadPage() {
                   </p>
                   <div className="flex items-center gap-3 mt-1 text-[10px] text-muted-foreground">
                     <span>{unlockedLabel ?? '匿名试探'}</span>
+                    {governance?.isCoolingDown ? <span className="text-[hsl(45,90%,65%)]">线程冷却中</span> : null}
+                    {governance?.isClosed ? <span className="text-destructive">线程已关闭</span> : null}
                     {tension?.tensionZones?.length ? <span>张力点 {tension.tensionZones.length}</span> : null}
                     {thread.unlockStage < 3 ? <span>距下一阶段 {remainingToNext} 条</span> : null}
                     {contactStatus?.allowed ? <span className="text-[hsl(165,55%,48%)]">可交换联系方式</span> : null}

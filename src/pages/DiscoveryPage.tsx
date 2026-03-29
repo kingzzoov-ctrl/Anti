@@ -362,10 +362,12 @@ export default function DiscoveryPage() {
       </div>
 
       {/* My exposure status */}
-      {myExposure > 0 && (
+      {(myExposure > 0 || profile?.socialBandwidth?.saturated || (profile?.socialBandwidth?.coolingThreadCount ?? 0) > 0) && (
         <div className="ariadne-card p-3 flex items-center gap-2 text-xs text-muted-foreground border-border/50">
           <RadarIcon className="h-3.5 w-3.5 text-primary shrink-0" />
           今日曝光次数：{myExposure} · 衰减系数 {Math.max(0, 1 - myExposure * 0.05).toFixed(2)}
+          {profile?.socialBandwidth?.saturated ? ' · 深度线程已占满，需关闭或冷却后再进入 discover' : ''}
+          {(profile?.socialBandwidth?.coolingThreadCount ?? 0) > 0 ? ` · 冷却线程 ${profile?.socialBandwidth?.coolingThreadCount} 个` : ''}
         </div>
       )}
 

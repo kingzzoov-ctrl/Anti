@@ -11,3 +11,7 @@ def test_coerce_runtime_value_supports_basic_types():
 def test_coerce_runtime_value_handles_invalid_numbers():
     assert _coerce_runtime_value('oops', 'int') == 0
     assert _coerce_runtime_value('oops', 'float') == 0.0
+
+
+def test_coerce_runtime_value_preserves_string_runtime_engine():
+    assert _coerce_runtime_value('memory', 'string') == 'memory'

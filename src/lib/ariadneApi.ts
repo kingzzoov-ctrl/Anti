@@ -1,6 +1,7 @@
+import type { DiscoveryCard, InsightReport, InterviewSession, MatchAnalysisPayload, MatchRecord, NotificationEvent, PrivacyConsent, ReportJob, SocialThread, StrategyAsset, SystemConfig, UserProfile } from '../types'
 import { authApi } from './localApi'
 import { getRuntimeApiBaseUrl } from './runtimeConfig'
-import type { DiscoveryCard, InsightReport, InterviewSession, MatchAnalysisPayload, MatchRecord, ReportJob, SocialThread, StrategyAsset, SystemConfig, UserProfile } from '../types'
+import type { DiscoveryCard, InsightReport, InterviewSession, MatchAnalysisPayload, MatchRecord, NotificationEvent, ReportJob, SocialThread, StrategyAsset, SystemConfig, UserProfile } from '../types'
 
 export interface ExposureLogSummary {
   id: string
@@ -41,6 +42,13 @@ export interface InterviewStreamChunk {
 export interface GenerateReportPayload extends InsightReport {
   tokenCost?: number
   remainingTokens?: number
+}
+
+export interface FetchNotificationsParams {
+  userId?: string
+  status?: string
+  sourceKind?: string
+  limit?: number
 }
 
 async function buildAuthHeaders(init?: RequestInit): Promise<HeadersInit> {
@@ -101,6 +109,24 @@ function normalizeSession(session: Partial<InterviewSession> & { payload?: Recor
 
 export async function fetchProfile(userId: string): Promise<UserProfile | null> {
   const payload = await readJson<GenericPayload<UserProfile>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/profiles/${userId}`)
+  return payload.data ?? null
+}
+
+export async function fetchPrivacyConsent(userId: string): Promise<PrivacyConsent | null> {
+  const payload = await readJson<GenericPayload<PrivacyConsent>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/profiles/${userId}/privacy-consent`)
+  return payload.data ?? null
+}
+
+export async function acceptPrivacyConsent(userId: string, input?: { version?: string; scope?: string }): Promise<{ consent?: PrivacyConsent; profile?: UserProfile } | null> {
+  const payload = await readJson<GenericPayload<{ consent?: PrivacyConsent; profile?: UserProfile }>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/profiles/${userId}/privacy-consent`, {
+    method: 'POST',
+    body: JSON.stringify({
+      userId,
+      version: input?.version ?? 'lab-v1',
+      scope: input?.scope ?? 'lab-interview',
+      action: 'privacy_consent_accept',
+    }),
+  })
   return payload.data ?? null
 }
 
@@ -167,6 +193,11 @@ function normalizeThread(thread: Partial<SocialThread>): SocialThread {
     stagePolicy: thread.stagePolicy,
     tensionHandbook: thread.tensionHandbook,
     contactExchangeStatus: thread.contactExchangeStatus,
+    status: thread.status,
+    cooldownUntil: thread.cooldownUntil,
+    closedAt: thread.closedAt,
+    governanceNote: thread.governanceNote,
+    governanceState: thread.governanceState,
     createdAt: thread.createdAt ?? new Date().toISOString(),
     updatedAt: thread.updatedAt ?? new Date().toISOString(),
   }
@@ -193,10 +224,10 @@ export async function fetchActiveStrategyAsset(assetKey: string): Promise<Strate
   return payload.data ?? null
 }
 
-export async function activateStrategyAsset(assetKey: string, version: string): Promise<StrategyAsset | null> {
+export async function activateStrategyAsset(assetKey: string, version: string, reason = 'admin-console-manual-switch', operator?: string): Promise<StrategyAsset | null> {
   const payload = await readJson<GenericPayload<StrategyAsset>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/runtime/strategy-assets/${assetKey}/activate`, {
     method: 'POST',
-    body: JSON.stringify({ version }),
+    body: JSON.stringify({ version, reason, operator }),
   })
   return payload.data ?? null
 }
@@ -279,6 +310,30 @@ export async function fetchMatches(userId?: string): Promise<MatchRecord[]> {
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const payload = await readJson<GenericPayload<{ items?: MatchRecord[] }>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/matches${suffix}`)
   return payload.data?.items ?? []
+}
+
+export async function fetchNotifications(params: FetchNotificationsParams = {}): Promise<NotificationEvent[]> {
+  const search = new URLSearchParams()
+  if (params.userId) search.set('user_id', params.userId)
+  if (params.status) search.set('status', params.status)
+  if (params.sourceKind) search.set('source_kind', params.sourceKind)
+  if (params.limit) search.set('limit', String(params.limit))
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  const payload = await readJson<GenericPayload<{ items?: NotificationEvent[] }>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/notifications${suffix}`)
+  return payload.data?.items ?? []
+}
+
+export async function fetchNotificationById(eventId: string): Promise<NotificationEvent | null> {
+  const payload = await readJson<GenericPayload<NotificationEvent>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/notifications/${eventId}`)
+  return payload.data ?? null
+}
+
+export async function replayNotification(eventId: string, scheduledAt?: string): Promise<NotificationEvent | null> {
+  const payload = await readJson<GenericPayload<NotificationEvent>>(`${getRuntimeApiBaseUrl()}/api/v1/ariadne/notifications/${eventId}/replay`, {
+    method: 'POST',
+    body: JSON.stringify({ scheduledAt }),
+  })
+  return payload.data ?? null
 }
 
 export async function createInterviewTurn(input: {

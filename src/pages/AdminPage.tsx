@@ -20,13 +20,14 @@ import {
   Network,
   RotateCcw,
   Download,
+  Loader2,
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useUserProfile } from '../hooks/useUserProfile'
-import { activateStrategyAsset, fetchAllProfiles, fetchExposureLogs, fetchRuntimeConfigs, fetchRuntimeStats, fetchSessions, fetchStrategyAssets, fetchThreads, updateProfile, updateRuntimeConfig } from '../lib/ariadneApi'
+import { activateStrategyAsset, fetchAllProfiles, fetchExposureLogs, fetchNotifications, fetchRuntimeConfigs, fetchRuntimeStats, fetchSessions, fetchStrategyAssets, fetchThreads, replayNotification, updateProfile, updateRuntimeConfig } from '../lib/ariadneApi'
 import { buildSessionReplayMarkdown } from '../lib/governanceExport'
 import { getRuntimeFunctionEnvName, RUNTIME_CONFIG_KEYS } from '../lib/runtimeConfig'
-import type { SystemConfig, InterviewSession, SocialThread, StrategyAsset } from '../types'
+import type { NotificationEvent, SystemConfig, InterviewSession, SocialThread, StrategyAsset } from '../types'
 
 type StatusFilter = 'ALL' | 'IN_PROGRESS' | 'COMPLETED' | 'PAUSED' | 'GENERATING_REPORT'
 type UserTier = 'Free' | 'Ad-Reward' | 'Premium'
@@ -60,6 +61,8 @@ interface NotificationInboxItem {
   createdAt: string
 }
 
+type NotificationStatusFilter = 'ALL' | 'queued' | 'running' | 'delivered' | 'skipped' | 'failed'
+
 export default function AdminPage() {
   const { user } = useAuth()
   const { profile, isLoading: profileLoading } = useUserProfile(user?.id ?? null)
@@ -87,6 +90,10 @@ export default function AdminPage() {
   const [strategyAssets, setStrategyAssets] = useState<StrategyAsset[]>([])
   const [activatingAssetKey, setActivatingAssetKey] = useState<string | null>(null)
   const [rollbackingSessionId, setRollbackingSessionId] = useState<string | null>(null)
+  const [notificationEvents, setNotificationEvents] = useState<NotificationEvent[]>([])
+  const [notificationStatusFilter, setNotificationStatusFilter] = useState<NotificationStatusFilter>('ALL')
+  const [notificationSourceFilter, setNotificationSourceFilter] = useState<string>('ALL')
+  const [replayingNotificationId, setReplayingNotificationId] = useState<string | null>(null)
 
   // Redirect if not admin
   useEffect(() => {
@@ -100,7 +107,7 @@ export default function AdminPage() {
     const load = async () => {
       setIsLoading(true)
       try {
-        const [rawConfigs, rawSessions, rawProfiles, rawExposureLogs, runtimeStats, rawThreads, rawStrategyAssets] = await Promise.all([
+        const [rawConfigs, rawSessions, rawProfiles, rawExposureLogs, runtimeStats, rawThreads, rawStrategyAssets, rawNotificationEvents] = await Promise.all([
           fetchRuntimeConfigs(),
           fetchSessions(),
           fetchAllProfiles(),
@@ -108,6 +115,7 @@ export default function AdminPage() {
           fetchRuntimeStats(),
           fetchThreads(),
           fetchStrategyAssets(),
+          fetchNotifications({ limit: 120 }),
         ])
 
         setConfigs(rawConfigs as SystemConfig[])
@@ -124,6 +132,7 @@ export default function AdminPage() {
         setStats(runtimeStats)
         setThreads(rawThreads)
         setStrategyAssets(rawStrategyAssets)
+        setNotificationEvents(rawNotificationEvents)
       } catch {
         // ignore
       } finally {
@@ -146,13 +155,13 @@ export default function AdminPage() {
   const handleActivateStrategyAsset = async (assetKey: string, version: string) => {
     setActivatingAssetKey(`${assetKey}:${version}`)
     try {
-      const updated = await activateStrategyAsset(assetKey, version)
+      const updated = await activateStrategyAsset(assetKey, version, 'admin-console-manual-switch', user?.id)
       if (updated) {
-        setStrategyAssets(prev => prev.map(asset => (
-          asset.assetKey === assetKey
-            ? { ...asset, isActive: asset.version === version }
-            : asset
-        )))
+        setStrategyAssets(prev => prev.map(asset => {
+          if (asset.assetKey !== assetKey) return asset
+          if (asset.version === version) return { ...asset, ...updated, isActive: true }
+          return { ...asset, isActive: false }
+        }))
         toast.success(`已切换 ${assetKey} 到 ${version}`)
       }
     } catch {
@@ -282,6 +291,15 @@ export default function AdminPage() {
     .sort((a, b) => (b.createdAt > a.createdAt ? 1 : -1))
     .slice(0, 12)
   const badCaseSessions = sessions.filter(session => badCaseIds.has(session.id))
+  const notificationSourceKinds = Array.from(new Set(notificationEvents.map(item => item.sourceKind).filter(Boolean) as string[]))
+  const filteredNotificationEvents = notificationEvents.filter(item => {
+    const statusOk = notificationStatusFilter === 'ALL' || item.status === notificationStatusFilter
+    const sourceOk = notificationSourceFilter === 'ALL' || item.sourceKind === notificationSourceFilter
+    return statusOk && sourceOk
+  })
+  const deadLetterNotifications = notificationEvents.filter(item => Boolean(item.deadLetteredAt || item.status === 'failed'))
+  const deliveredNotifications = notificationEvents.filter(item => item.status === 'delivered').length
+  const queuedNotifications = notificationEvents.filter(item => item.status === 'queued' || item.status === 'running').length
 
   const handleExportSessionReplay = (session: InterviewSession) => {
     const content = buildSessionReplayMarkdown(session)
@@ -311,6 +329,42 @@ export default function AdminPage() {
       setRollbackingSessionId(null)
     }
   }
+
+  const reloadNotifications = async () => {
+    try {
+      const items = await fetchNotifications({ limit: 120 })
+      setNotificationEvents(items)
+    } catch {
+      toast.error('刷新通知队列失败')
+    }
+  }
+
+  const handleReplayNotification = async (eventId: string) => {
+    setReplayingNotificationId(eventId)
+    try {
+      await replayNotification(eventId)
+      toast.success('通知已重新入队')
+      await reloadNotifications()
+    } catch {
+      toast.error('通知重放失败')
+    } finally {
+      setReplayingNotificationId(null)
+    }
+  }
+
+  const getNotificationStatusBadgeClass = (status: string) => {
+    if (status === 'delivered') return 'border-primary/40 text-primary'
+    if (status === 'queued' || status === 'running') return 'border-[hsl(200,70%,55%)]/40 text-[hsl(200,70%,65%)]'
+    if (status === 'failed') return 'border-destructive/40 text-destructive'
+    if (status === 'skipped') return 'border-[hsl(45,90%,55%)]/40 text-[hsl(45,90%,65%)]'
+    return 'border-border text-muted-foreground'
+  }
+
+  const formatNotificationTime = (value?: string | null) => {
+    if (!value) return '—'
+    return value.replace('T', ' ').replace('Z', '')
+  }
+
   const promptVersionConfigs = configs.filter(c => PROMPT_VERSION_KEYS.includes(c.key))
   const regularConfigs = configs.filter(c => !PROMPT_VERSION_KEYS.includes(c.key))
   const runtimeEngineConfigs = configs.filter(c => [
@@ -1063,40 +1117,201 @@ export default function AdminPage() {
         </TabsContent>
 
         <TabsContent value="notifications" className="mt-4">
-          <Card className="ariadne-card border-0">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Network className="h-4 w-4 text-primary" />
-                通知分发中心
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {latestInbox.length === 0 ? (
-                <div className="py-12 text-center">
-                  <Network className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
-                  <p className="text-muted-foreground text-sm">暂无通知记录</p>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <Card className="ariadne-card border-0">
+                <CardContent className="p-4 space-y-1">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground">通知事件</p>
+                  <p className="text-2xl font-mono font-bold text-foreground">{notificationEvents.length}</p>
+                </CardContent>
+              </Card>
+              <Card className="ariadne-card border-0">
+                <CardContent className="p-4 space-y-1">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground">排队处理中</p>
+                  <p className="text-2xl font-mono font-bold text-[hsl(200,70%,65%)]">{queuedNotifications}</p>
+                </CardContent>
+              </Card>
+              <Card className="ariadne-card border-0">
+                <CardContent className="p-4 space-y-1">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground">已送达</p>
+                  <p className="text-2xl font-mono font-bold text-primary">{deliveredNotifications}</p>
+                </CardContent>
+              </Card>
+              <Card className="ariadne-card border-0">
+                <CardContent className="p-4 space-y-1">
+                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground">死信 / 失败</p>
+                  <p className="text-2xl font-mono font-bold text-destructive">{deadLetterNotifications.length}</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card className="ariadne-card border-0">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Network className="h-4 w-4 text-primary" />
+                    通知队列治理
+                  </CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-[10px] border-primary/40 text-primary hover:bg-primary/10"
+                    onClick={reloadNotifications}
+                  >
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    刷新
+                  </Button>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {latestInbox.map(item => (
-                    <div key={item.id} className="rounded-lg border border-border/60 bg-card p-3 space-y-1.5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-xs font-medium text-foreground">{item.title}</p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">{item.userId} · {item.channel} · {item.kind}</p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <Select value={notificationStatusFilter} onValueChange={(v) => setNotificationStatusFilter(v as NotificationStatusFilter)}>
+                    <SelectTrigger className="w-40 h-8 text-xs bg-card border-border">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ALL">全部状态</SelectItem>
+                      <SelectItem value="queued">queued</SelectItem>
+                      <SelectItem value="running">running</SelectItem>
+                      <SelectItem value="delivered">delivered</SelectItem>
+                      <SelectItem value="skipped">skipped</SelectItem>
+                      <SelectItem value="failed">failed</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  <Select value={notificationSourceFilter} onValueChange={setNotificationSourceFilter}>
+                    <SelectTrigger className="w-40 h-8 text-xs bg-card border-border">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ALL">全部来源</SelectItem>
+                      {notificationSourceKinds.map(source => (
+                        <SelectItem key={source} value={source}>{source}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  <span className="text-xs text-muted-foreground ml-auto">{filteredNotificationEvents.length} 条事件</span>
+                </div>
+
+                {filteredNotificationEvents.length === 0 ? (
+                  <div className="py-12 text-center">
+                    <Network className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-muted-foreground text-sm">暂无匹配的通知事件</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredNotificationEvents.map(item => {
+                      const isDeadLetter = Boolean(item.deadLetteredAt || item.status === 'failed')
+                      const canReplay = item.status === 'failed' || item.status === 'skipped' || Boolean(item.deadLetteredAt)
+                      return (
+                        <div key={item.id} className={`rounded-lg border bg-card p-3 space-y-2 ${isDeadLetter ? 'border-destructive/40' : 'border-border/60'}`}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <p className="text-xs font-medium text-foreground">{item.title || item.kind}</p>
+                                <Badge variant="outline" className={`text-[9px] h-4 ${getNotificationStatusBadgeClass(item.status)}`}>
+                                  {item.status}
+                                </Badge>
+                                <Badge variant="outline" className="text-[9px] h-4 border-border text-muted-foreground">
+                                  {item.channel}
+                                </Badge>
+                                <Badge variant="outline" className="text-[9px] h-4 border-border text-muted-foreground">
+                                  {item.kind}
+                                </Badge>
+                                {isDeadLetter && (
+                                  <Badge variant="outline" className="text-[9px] h-4 border-destructive/40 text-destructive">
+                                    dead-letter
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-muted-foreground mt-1 break-all">
+                                {item.userId} · {item.sourceKind ?? 'unknown-source'} · retry {item.retryCount}/{item.maxRetries}
+                              </p>
+                            </div>
+                            {canReplay && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-[10px] border-destructive/40 text-destructive hover:bg-destructive/10"
+                                onClick={() => handleReplayNotification(item.id)}
+                                disabled={replayingNotificationId === item.id}
+                              >
+                                {replayingNotificationId === item.id ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RotateCcw className="h-3 w-3 mr-1" />}
+                                重放
+                              </Button>
+                            )}
+                          </div>
+
+                          <p className="text-xs text-muted-foreground">{item.body}</p>
+
+                          {item.lastError && (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-[11px] text-destructive break-all">
+                              {item.lastError}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-[10px] text-muted-foreground">
+                            <div className="rounded-md border border-border/50 bg-muted/20 p-2">
+                              <p className="uppercase tracking-widest">created</p>
+                              <p className="mt-1 text-foreground">{formatNotificationTime(item.createdAt)}</p>
+                            </div>
+                            <div className="rounded-md border border-border/50 bg-muted/20 p-2">
+                              <p className="uppercase tracking-widest">scheduled</p>
+                              <p className="mt-1 text-foreground">{formatNotificationTime(item.scheduledAt)}</p>
+                            </div>
+                            <div className="rounded-md border border-border/50 bg-muted/20 p-2">
+                              <p className="uppercase tracking-widest">delivered</p>
+                              <p className="mt-1 text-foreground">{formatNotificationTime(item.deliveredAt)}</p>
+                            </div>
+                            <div className="rounded-md border border-border/50 bg-muted/20 p-2">
+                              <p className="uppercase tracking-widest">idempotency</p>
+                              <p className="mt-1 text-foreground break-all">{item.idempotencyKey ?? '—'}</p>
+                            </div>
+                          </div>
                         </div>
-                        <Badge variant="outline" className="text-[9px] border-border text-muted-foreground">
-                          {item.status}
-                        </Badge>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="ariadne-card border-0">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <MessageSquareWarning className="h-4 w-4 text-[hsl(45,90%,65%)]" />
+                  用户 Inbox 快照
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {latestInbox.length === 0 ? (
+                  <div className="py-10 text-center">
+                    <Network className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-muted-foreground text-sm">暂无 inbox 快照</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {latestInbox.map(item => (
+                      <div key={item.id} className="rounded-lg border border-border/60 bg-card p-3 space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-medium text-foreground">{item.title}</p>
+                            <p className="text-[10px] text-muted-foreground mt-0.5">{item.userId} · {item.channel} · {item.kind}</p>
+                          </div>
+                          <Badge variant="outline" className="text-[9px] border-border text-muted-foreground">
+                            {item.status}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{item.body}</p>
+                        <p className="text-[10px] text-muted-foreground/70">{item.createdAt}</p>
                       </div>
-                      <p className="text-xs text-muted-foreground">{item.body}</p>
-                      <p className="text-[10px] text-muted-foreground/70">{item.createdAt}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="governance" className="mt-4 space-y-4">
@@ -1146,6 +1361,13 @@ export default function AdminPage() {
                           <div className="min-w-0 flex-1">
                             <p className="text-xs text-foreground">{asset.title || asset.version}</p>
                             <p className="text-[10px] text-muted-foreground mt-0.5 truncate">{asset.sourcePath || '未登记 sourcePath'}</p>
+                            {(asset.rollbackNote || asset.activatedFromVersion || asset.rollbackOperator) ? (
+                              <p className="text-[10px] text-muted-foreground mt-1">
+                                {asset.activatedFromVersion ? `从 ${asset.activatedFromVersion} 回切` : '首次激活'}
+                                {asset.rollbackOperator ? ` · 操作者 ${asset.rollbackOperator}` : ''}
+                                {asset.rollbackNote ? ` · ${asset.rollbackNote}` : ''}
+                              </p>
+                            ) : null}
                           </div>
                           <Badge variant="outline" className={`text-[9px] ${asset.isActive ? 'border-primary/40 text-primary' : 'border-border text-muted-foreground'}`}>
                             {asset.version}

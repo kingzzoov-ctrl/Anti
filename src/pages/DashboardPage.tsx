@@ -230,6 +230,8 @@ export default function DashboardPage() {
             <span>今日曝光: {todayExposureCount} 次</span>
             <span>·</span>
             <span>可见度: {(decayCoeff * 100).toFixed(0)}%</span>
+            <span>· 活跃线程: {profile?.socialBandwidth?.activeThreadCount ?? 0}/{profile?.socialBandwidth?.activeThreadLimit ?? 0}</span>
+            {(profile?.socialBandwidth?.coolingThreadCount ?? 0) > 0 ? <span>· 冷却线程: {profile?.socialBandwidth?.coolingThreadCount}</span> : null}
             {profile?.matchingEnabled && <span>· 匹配雷达: 运行中</span>}
           </>
         )}

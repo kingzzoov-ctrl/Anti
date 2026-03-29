@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from uuid import uuid4
 
@@ -7,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.db.session import Base, engine, get_db
+from app.db.session import get_db
 from app.schemas.ariadne import (
+    AdRewardClaimRequest,
     DeepMatchRequest,
     DiscoverRequest,
     GenerateReportRequest,
@@ -16,6 +18,8 @@ from app.schemas.ariadne import (
     IcebreakerRequest,
     InterviewStreamRequest,
     InterviewTurnRequest,
+    NotificationReplayRequest,
+    PrivacyConsentAcceptRequest,
     ReportJobCreateRequest,
     SessionStateUpsertRequest,
     SocialThreadUpsertRequest,
@@ -24,14 +28,20 @@ from app.schemas.ariadne import (
     TogglePublicRequest,
     UserProfileUpdateRequest,
 )
-from app.services.bootstrap import bootstrap_defaults
 from app.services.interview_engine import build_interview_reply, build_report
 from app.services.match_engine import build_deep_match, build_discovery_cards
-from app.services.report_jobs import create_report_job, get_report_job, list_report_jobs, process_report_job, serialize_report_job
+from app.services.notification_service import append_notifications, build_notification_events, enqueue_notification_events, get_notification_event, list_notification_events, replay_notification_event, resolve_notification_channels, serialize_notification_event
+from app.services.report_jobs import create_report_job, get_report_job, list_report_jobs, serialize_report_job
 from app.services.rate_limit import consume, consume_token_balance
 from app.services.redis_state import load_state, save_state
 from app.services.runtime_config import get_runtime_config
 from app.services.storage_service import (
+    accept_privacy_consent,
+    assert_social_discoverable,
+    build_ad_reward_task_catalog,
+    build_social_bandwidth_snapshot,
+    build_social_bandwidth_snapshots,
+    create_ad_reward_claim,
     build_admin_stats,
     create_exposure_logs,
     get_or_create_user_profile,
@@ -41,6 +51,7 @@ from app.services.storage_service import (
     get_session_state,
     get_social_thread,
     list_all_session_states,
+    list_ad_reward_claims,
     list_exposure_logs,
     list_match_records,
     list_reports,
@@ -56,7 +67,9 @@ from app.services.storage_service import (
     set_user_token_balance,
     activate_strategy_asset,
     serialize_configs,
+    serialize_ad_reward_claim,
     serialize_match_record,
+    serialize_privacy_consent,
     serialize_profile,
     serialize_report,
     serialize_session,
@@ -72,7 +85,6 @@ from app.services.storage_service import (
 from app.services.runtime_config import list_runtime_configs
 
 router = APIRouter()
-Base.metadata.create_all(bind=engine)
 
 
 def _format_sse_event(event: str, data: dict) -> str:
@@ -173,15 +185,6 @@ def _ensure_token_budget(db: Session, user_id: str, *, cost_key: str, bucket_suf
     return cost, remaining
 
 
-@router.on_event('startup')
-def on_startup() -> None:
-    db = next(get_db())
-    try:
-        bootstrap_defaults(db)
-    finally:
-        db.close()
-
-
 @router.get('/status')
 def ariadne_status() -> GenericResponse:
     return GenericResponse(
@@ -196,7 +199,7 @@ def ariadne_status() -> GenericResponse:
 
 
 @router.get('/runtime/config')
-def get_runtime_config(db: Session = Depends(get_db)) -> GenericResponse:
+def get_runtime_config_route(db: Session = Depends(get_db)) -> GenericResponse:
     return GenericResponse(data={'items': list_runtime_configs(db)})
 
 
@@ -216,7 +219,7 @@ def get_active_asset(asset_key: str, db: Session = Depends(get_db)) -> GenericRe
 
 @router.post('/runtime/strategy-assets/{asset_key}/activate')
 def post_activate_asset(asset_key: str, payload: StrategyAssetActivateRequest, db: Session = Depends(get_db)) -> GenericResponse:
-    entity = activate_strategy_asset(db, asset_key, payload.version)
+    entity = activate_strategy_asset(db, asset_key, payload.version, reason=payload.reason, operator=payload.operator)
     if entity is None:
         raise HTTPException(status_code=404, detail='Strategy asset not found')
     return GenericResponse(data=serialize_strategy_asset(entity))
@@ -247,13 +250,98 @@ def put_runtime_config(config_key: str, payload: SystemConfigUpdateRequest, db: 
 @router.get('/profiles/{user_id}')
 def get_profile(user_id: str, db: Session = Depends(get_db)) -> GenericResponse:
     profile = get_or_create_user_profile(db, user_id)
-    return GenericResponse(data=serialize_profile(profile))
+    runtime_config = get_runtime_config(db)
+    bandwidth_snapshot = build_social_bandwidth_snapshot(
+        db,
+        user_id=profile.user_id,
+        matching_enabled=bool(profile.matching_enabled),
+        active_thread_limit=int(runtime_config['SOCIAL_ACTIVE_THREAD_LIMIT']),
+    )
+    return GenericResponse(data=serialize_profile(profile, bandwidth_snapshot))
+
+
+@router.get('/profiles/{user_id}/privacy-consent')
+def get_profile_privacy_consent(user_id: str, db: Session = Depends(get_db)) -> GenericResponse:
+    profile = get_or_create_user_profile(db, user_id)
+    return GenericResponse(data=serialize_privacy_consent(profile))
+
+
+@router.post('/profiles/{user_id}/privacy-consent')
+def post_profile_privacy_consent(user_id: str, payload: PrivacyConsentAcceptRequest, db: Session = Depends(get_db)) -> GenericResponse:
+    if payload.user_id != user_id:
+        raise HTTPException(status_code=400, detail='User mismatch')
+    profile = accept_privacy_consent(db, user_id, version=payload.version, scope=payload.scope)
+    runtime_config = get_runtime_config(db)
+    bandwidth_snapshot = build_social_bandwidth_snapshot(
+        db,
+        user_id=profile.user_id,
+        matching_enabled=bool(profile.matching_enabled),
+        active_thread_limit=int(runtime_config['SOCIAL_ACTIVE_THREAD_LIMIT']),
+    )
+    return GenericResponse(
+        data={
+            'consent': serialize_privacy_consent(profile),
+            'profile': serialize_profile(profile, bandwidth_snapshot),
+        }
+    )
 
 
 @router.get('/profiles')
 def get_profiles(db: Session = Depends(get_db)) -> GenericResponse:
-    profiles = [serialize_profile(item) for item in list_user_profiles(db)]
+    profile_entities = list_user_profiles(db)
+    runtime_config = get_runtime_config(db)
+    bandwidth_by_user = build_social_bandwidth_snapshots(
+        db,
+        user_ids=[item.user_id for item in profile_entities],
+        matching_enabled_by_user={item.user_id: bool(item.matching_enabled) for item in profile_entities},
+        active_thread_limit=int(runtime_config['SOCIAL_ACTIVE_THREAD_LIMIT']),
+    )
+    profiles = [serialize_profile(item, bandwidth_by_user.get(item.user_id)) for item in profile_entities]
     return GenericResponse(data={'items': profiles})
+
+
+@router.get('/ad-rewards/tasks')
+def get_ad_reward_tasks(user_id: str, db: Session = Depends(get_db)) -> GenericResponse:
+    profile = get_or_create_user_profile(db, user_id)
+    runtime_config = get_runtime_config(db)
+    claims = list_ad_reward_claims(db, user_id=user_id)
+    items = build_ad_reward_task_catalog(
+        claims=claims,
+        daily_limit=int(runtime_config['AD_REWARD_DAILY_LIMIT']),
+        reward_tokens=int(runtime_config['AD_REWARD_TOKEN_REWARD']),
+    )
+    return GenericResponse(
+        data={
+            'tier': profile.tier,
+            'items': items,
+            'claims': [serialize_ad_reward_claim(item) for item in claims],
+        }
+    )
+
+
+@router.post('/ad-rewards/tasks/{task_key}/claim')
+def post_ad_reward_claim(task_key: str, payload: AdRewardClaimRequest, db: Session = Depends(get_db)) -> GenericResponse:
+    runtime_config = get_runtime_config(db)
+    try:
+        claim, profile = create_ad_reward_claim(
+            db,
+            user_id=payload.user_id,
+            task_key=task_key,
+            reward_tokens=int(runtime_config['AD_REWARD_TOKEN_REWARD']),
+            daily_limit=int(runtime_config['AD_REWARD_DAILY_LIMIT']),
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 400
+        if 'limit' in detail.lower():
+            status_code = 409
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return GenericResponse(
+        data={
+            'claim': serialize_ad_reward_claim(claim),
+            'profile': serialize_profile(profile),
+        }
+    )
 
 
 @router.patch('/profiles/{profile_id}')
@@ -262,7 +350,14 @@ def patch_profile(profile_id: str, payload: UserProfileUpdateRequest, db: Sessio
     profile = update_user_profile(db, profile_id, data)
     if profile is None:
         raise HTTPException(status_code=404, detail='Profile not found')
-    return GenericResponse(data=serialize_profile(profile))
+    runtime_config = get_runtime_config(db)
+    bandwidth_snapshot = build_social_bandwidth_snapshot(
+        db,
+        user_id=profile.user_id,
+        matching_enabled=bool(profile.matching_enabled),
+        active_thread_limit=int(runtime_config['SOCIAL_ACTIVE_THREAD_LIMIT']),
+    )
+    return GenericResponse(data=serialize_profile(profile, bandwidth_snapshot))
 
 
 @router.get('/sessions')
@@ -386,7 +481,6 @@ def create_async_report_job(payload: ReportJobCreateRequest, db: Session = Depen
         session_id=payload.session_id,
         trigger_payload={'messagesCount': len(payload.messages)},
     )
-    job = process_report_job(db, job.id)
     return GenericResponse(data=serialize_report_job(job, db))
 
 
@@ -495,6 +589,9 @@ def put_thread(thread_id: str, payload: SocialThreadUpsertRequest, db: Session =
             tension_report=tension_report,
             unlock_milestones=payload.unlock_milestones,
             messages=payload.messages,
+            status=payload.status,
+            cooldown_until=payload.cooldown_until,
+            governance_note=payload.governance_note,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -515,14 +612,63 @@ def get_match_detail(match_id: str, db: Session = Depends(get_db)) -> GenericRes
     return GenericResponse(data=serialize_match_record(entity))
 
 
+@router.get('/notifications')
+def get_notifications(
+    user_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> GenericResponse:
+    items = [serialize_notification_event(item) for item in list_notification_events(db, user_id=user_id, status=status, source_kind=source_kind, limit=limit)]
+    return GenericResponse(data={'items': items})
+
+
+@router.get('/notifications/{event_id}')
+def get_notification_detail(event_id: str, db: Session = Depends(get_db)) -> GenericResponse:
+    entity = get_notification_event(db, event_id)
+    if entity is None:
+        raise HTTPException(status_code=404, detail='Notification event not found')
+    return GenericResponse(data=serialize_notification_event(entity))
+
+
+@router.post('/notifications/{event_id}/replay')
+def post_notification_replay(event_id: str, payload: NotificationReplayRequest, db: Session = Depends(get_db)) -> GenericResponse:
+    scheduled_at = None
+    if payload.scheduled_at:
+        try:
+            scheduled_at = datetime.fromisoformat(payload.scheduled_at.replace('Z', '+00:00'))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail='Invalid scheduledAt') from exc
+    try:
+        entity = replay_notification_event(db, event_id, scheduled_at=scheduled_at)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return GenericResponse(data=serialize_notification_event(entity))
+
+
 @router.post('/match/discover')
 def discover(payload: DiscoverRequest, db: Session = Depends(get_db)) -> GenericResponse:
+    runtime_config = get_runtime_config(db)
+    source_profile = get_or_create_user_profile(db, payload.user_id)
+    bandwidth_snapshot = build_social_bandwidth_snapshot(
+        db,
+        user_id=payload.user_id,
+        matching_enabled=bool(source_profile.matching_enabled),
+        active_thread_limit=int(runtime_config['SOCIAL_ACTIVE_THREAD_LIMIT']),
+    )
+    try:
+        assert_social_discoverable(bandwidth_snapshot, matching_enabled=bool(source_profile.matching_enabled))
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 403 if 'disabled' in detail.lower() else 409
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
     cost, remaining_tokens = _ensure_token_budget(db, payload.user_id, cost_key='TOKEN_COST_DISCOVER', bucket_suffix='discover')
     source_reports = list_reports(db, user_id=payload.user_id)
     if not source_reports:
         raise HTTPException(status_code=404, detail='Source report not found')
 
-    runtime_config = get_runtime_config(db)
     consistency_threshold = float(runtime_config['CONSISTENCY_MIN_THRESHOLD'])
     decay_factor = float(runtime_config['MATCH_DECAY_FACTOR'])
     resonance_threshold = float(runtime_config['MATCH_RESONANCE_THRESHOLD'])
@@ -531,6 +677,7 @@ def discover(payload: DiscoverRequest, db: Session = Depends(get_db)) -> Generic
     candidate_entities = list_similar_reports(
         db,
         source_embedding=source_report.get('vEmbedding'),
+        vector_search_engine=str(runtime_config.get('VECTOR_SEARCH_ENGINE', 'pgvector')),
         exclude_user_id=payload.user_id,
         exclude_report_ids=[source_entity.id],
         public_only=True,
@@ -543,6 +690,21 @@ def discover(payload: DiscoverRequest, db: Session = Depends(get_db)) -> Generic
             for item in list_reports(db, public_only=True)
             if item.user_id != payload.user_id and item.id != source_entity.id and float(item.consistency_score or 0) >= consistency_threshold
         ]
+
+    candidate_profiles = {item.user_id: get_or_create_user_profile(db, item.user_id) for item in candidate_entities}
+    candidate_bandwidth = build_social_bandwidth_snapshots(
+        db,
+        user_ids=list(candidate_profiles.keys()),
+        matching_enabled_by_user={user_id: bool(profile.matching_enabled) for user_id, profile in candidate_profiles.items()},
+        active_thread_limit=int(runtime_config['SOCIAL_ACTIVE_THREAD_LIMIT']),
+    )
+    candidate_entities = [
+        item
+        for item in candidate_entities
+        if bool(candidate_bandwidth.get(item.user_id, {}).get('discoverable', True))
+    ]
+    if not candidate_entities:
+        return GenericResponse(data={'items': [], 'tokenCost': cost, 'remainingTokens': remaining_tokens})
 
     candidates = [serialize_report(item) for item in candidate_entities]
     exposure_counts = get_daily_exposure_counts(
@@ -596,6 +758,7 @@ def deep_match(payload: DeepMatchRequest, db: Session = Depends(get_db)) -> Gene
     recalled_candidates = list_similar_reports(
         db,
         source_embedding=source_report.get('vEmbedding'),
+        vector_search_engine=str(get_runtime_config(db).get('VECTOR_SEARCH_ENGINE', 'pgvector')),
         exclude_user_id=payload.user_id,
         exclude_report_ids=[source_entity.id],
         public_only=True,
@@ -626,6 +789,39 @@ def deep_match(payload: DeepMatchRequest, db: Session = Depends(get_db)) -> Gene
         match_analysis=result,
         status='complete',
     )
+    source_profile = get_or_create_user_profile(db, payload.user_id)
+    target_profile = get_or_create_user_profile(db, target_user_id)
+    source_events = build_notification_events(
+        user_id=payload.user_id,
+        kind='match_ready',
+        title='深度匹配推演已完成',
+        body='你的匹配推演结果已准备完成，可查看张力分析与破冰建议。',
+        channels=resolve_notification_channels('match_ready', source_profile),
+    )
+    target_events = build_notification_events(
+        user_id=target_user_id,
+        kind='match_ready',
+        title='你收到一条新的匹配推演',
+        body='系统已为你生成一条新的匹配推演，可查看当前关系张力与互动建议。',
+        channels=resolve_notification_channels('match_ready', target_profile),
+    )
+    queued_source = enqueue_notification_events(db, source_events, source_kind='match_record', source_id=entity.id)
+    queued_target = enqueue_notification_events(db, target_events, source_kind='match_record', source_id=f'{entity.id}:target')
+    source_payloads = [serialize_notification_event(item) for item in queued_source]
+    target_payloads = [serialize_notification_event(item) for item in queued_target]
+    source_inbox = [item for item in source_payloads if item.get('channel') == 'inbox']
+    target_inbox = [item for item in target_payloads if item.get('channel') == 'inbox']
+    source_profile.notification_channels = {
+        **(source_profile.notification_channels or {}),
+        'inbox': append_notifications({'notifications': source_profile.notification_channels.get('inbox', [])}, source_inbox).get('notifications', []),
+        'deliveryLog': [*(source_profile.notification_channels.get('deliveryLog', []) or []), *source_payloads][-20:],
+    }
+    target_profile.notification_channels = {
+        **(target_profile.notification_channels or {}),
+        'inbox': append_notifications({'notifications': target_profile.notification_channels.get('inbox', [])}, target_inbox).get('notifications', []),
+        'deliveryLog': [*(target_profile.notification_channels.get('deliveryLog', []) or []), *target_payloads][-20:],
+    }
+    db.commit()
     return GenericResponse(data=serialize_match_record(entity) | {'matchAnalysis': result, **result, 'tokenCost': cost, 'remainingTokens': remaining_tokens})
 
 

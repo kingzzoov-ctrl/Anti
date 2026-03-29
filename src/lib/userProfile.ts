@@ -8,6 +8,9 @@ export const DEFAULT_PROFILE_CONFIG = {
 }
 
 export function parseUserProfile(raw: Record<string, unknown>): UserProfile {
+  const privacyConsentRaw = raw.privacyConsent && typeof raw.privacyConsent === 'object'
+    ? raw.privacyConsent as Record<string, unknown>
+    : {}
   return {
     id: String(raw.id ?? ''),
     userId: String(raw.userId ?? ''),
@@ -16,6 +19,12 @@ export function parseUserProfile(raw: Record<string, unknown>): UserProfile {
     tokenBalance: Number(raw.tokenBalance) || 0,
     notificationChannels: parseJsonRecord(raw.notificationChannels),
     matchingEnabled: Number(raw.matchingEnabled) > 0,
+    privacyConsent: {
+      accepted: Boolean(privacyConsentRaw.accepted),
+      acceptedAt: privacyConsentRaw.acceptedAt ? String(privacyConsentRaw.acceptedAt) : null,
+      version: privacyConsentRaw.version ? String(privacyConsentRaw.version) : null,
+      scope: privacyConsentRaw.scope ? String(privacyConsentRaw.scope) : null,
+    },
     isAdmin: Number(raw.isAdmin) > 0,
     createdAt: String(raw.createdAt ?? new Date().toISOString()),
     updatedAt: String(raw.updatedAt ?? new Date().toISOString()),

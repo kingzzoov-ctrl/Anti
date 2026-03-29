@@ -369,6 +369,14 @@ export default function ThreadDetailPage() {
 
   const sendMessage = async (content: string) => {
     if (!content.trim() || !user?.id || !thread || isSending) return
+    if (thread.governanceState?.isCoolingDown) {
+      toast.error('该线程正在冷却，暂时不能继续发送消息')
+      return
+    }
+    if (thread.governanceState?.isClosed) {
+      toast.error('该线程已关闭，无法继续发送消息')
+      return
+    }
     setIsSending(true)
 
     const newMsg: ThreadMessage = {
@@ -471,6 +479,18 @@ export default function ThreadDetailPage() {
 
   return (
     <div className="flex flex-col h-screen bg-background">
+      {thread.governanceState && !thread.governanceState.isActive ? (
+        <div className={`mx-4 mt-4 rounded-xl border px-4 py-3 ${thread.governanceState.isClosed ? 'border-destructive/30 bg-destructive/5' : 'border-[hsl(45,90%,55%)]/30 bg-[hsl(45,90%,55%)]/5'}`}>
+          <div className="flex items-start gap-3">
+            <AlertTriangle className={`h-4 w-4 mt-0.5 shrink-0 ${thread.governanceState.isClosed ? 'text-destructive' : 'text-[hsl(45,90%,65%)]'}`} />
+            <div className="space-y-1">
+              <p className="text-sm text-foreground font-medium">{thread.governanceState.label}</p>
+              <p className="text-xs text-muted-foreground">{thread.governanceState.reason}</p>
+              {thread.governanceState.governanceNote ? <p className="text-xs text-muted-foreground">治理备注：{thread.governanceState.governanceNote}</p> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
       {/* ── Header ── */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-background/80 backdrop-blur-sm shrink-0">
         <div className="flex items-center gap-3">
